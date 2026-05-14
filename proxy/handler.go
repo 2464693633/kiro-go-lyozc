@@ -1964,6 +1964,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetProxy(w, r)
 	case path == "/proxy" && r.Method == "POST":
 		h.apiUpdateProxy(w, r)
+	case path == "/prompt-filter" && r.Method == "GET":
+		h.apiGetPromptFilter(w, r)
+	case path == "/prompt-filter" && r.Method == "POST":
+		h.apiUpdatePromptFilter(w, r)
 	case path == "/version" && r.Method == "GET":
 		h.apiGetVersion(w, r)
 	case path == "/export" && r.Method == "POST":
@@ -2607,6 +2611,40 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) apiGetPromptFilter(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"sanitizeClaudeCodePrompt": config.GetSanitizeClaudeCodePrompt(),
+		"rules":                    config.GetPromptFilterRules(),
+	})
+}
+
+func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SanitizeClaudeCodePrompt *bool                     `json:"sanitizeClaudeCodePrompt,omitempty"`
+		Rules                    *[]config.PromptFilterRule `json:"rules,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	if req.SanitizeClaudeCodePrompt != nil {
+		if err := config.UpdatePromptFilter(*req.SanitizeClaudeCodePrompt); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.Rules != nil {
+		if err := config.UpdatePromptFilterRules(*req.Rules); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ApiKey         string `json:"apiKey"`
@@ -2667,7 +2705,7 @@ func (h *Handler) apiGenerateMachineId(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"machineId": machineId})
 }
 
-// apiTestAccount tests connectivity for a specific account using its configured proxy.
+// apiTestAccount tests a specific account by sending a real model request through its proxy.
 func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id string) {
 	accounts := config.GetAccounts()
 	var account *config.Account
@@ -2689,7 +2727,38 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 
-	info, err := GetUserInfo(account)
+	// Parse test model from request body (optional)
+	var req struct {
+		Model string `json:"model"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Model == "" {
+		req.Model = "claude-sonnet-4"
+	}
+
+	// Build a minimal chat payload
+	thinkingCfg := config.GetThinkingConfig()
+	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
+
+	openaiReq := &OpenAIRequest{
+		Model:     actualModel,
+		Messages:  []OpenAIMessage{{Role: "user", Content: "say ok"}},
+		MaxTokens: 5,
+		Stream:    false,
+	}
+	kiroPayload := OpenAIToKiro(openaiReq, thinking)
+
+	var content string
+	callback := &KiroStreamCallback{
+		OnText:     func(text string, isThinking bool) { content += text },
+		OnToolUse:  func(tu KiroToolUse) {},
+		OnComplete: func(inTok, outTok int) {},
+		OnError:    func(err error) {},
+		OnCredits:  func(c float64) {},
+		OnContextUsage: func(pct float64) {},
+	}
+
+	err := CallKiroAPI(account, kiroPayload, callback)
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -2698,8 +2767,8 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"email":   info.Email,
-		"status":  info.Status,
+		"reply":   content,
+		"model":   req.Model,
 	})
 }
 

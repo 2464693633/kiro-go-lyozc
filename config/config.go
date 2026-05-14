@@ -95,6 +95,18 @@ type Account struct {
 	TotalCredits float64 `json:"totalCredits,omitempty"` // Cumulative credits consumed
 }
 
+// PromptFilterRule defines a single prompt sanitization rule.
+// Type can be: "regex" (regex match/replace), "contains" (substring match, replace entire prompt),
+// or "template" (predefined template name like "claude-code").
+type PromptFilterRule struct {
+	ID      string `json:"id"`                // Unique rule identifier
+	Name    string `json:"name"`              // Human-readable rule name
+	Type    string `json:"type"`              // "regex", "contains", or "template"
+	Match   string `json:"match"`             // Pattern to match (regex pattern, substring, or template name)
+	Replace string `json:"replace,omitempty"` // Replacement string (empty = remove matched content)
+	Enabled bool   `json:"enabled"`           // Whether this rule is active
+}
+
 // Config represents the global application configuration.
 type Config struct {
 	// Server settings
@@ -130,6 +142,15 @@ type Config struct {
 	//         "http://host:port",  "http://user:pass@host:port"
 	// Leave empty to connect directly.
 	ProxyURL string `json:"proxyURL,omitempty"`
+
+	// SanitizeClaudeCodePrompt strips Claude Code CLI system prompts before forwarding.
+	// When enabled, Claude Code's built-in system prompt is replaced with a minimal backend prompt,
+	// and common noise (env info, git status, etc.) is filtered out.
+	SanitizeClaudeCodePrompt bool `json:"sanitizeClaudeCodePrompt,omitempty"`
+
+	// PromptFilterRules is a list of user-defined prompt sanitization rules.
+	// Each rule can match and replace/remove content from system prompts.
+	PromptFilterRules []PromptFilterRule `json:"promptFilterRules,omitempty"`
 
 	// LogLevel controls verbosity of application logs.
 	// Accepted values: "debug", "info", "warn", "error". Defaults to "info".
@@ -435,6 +456,42 @@ func UpdateAccountInfo(id string, info AccountInfo) error {
 		}
 	}
 	return nil
+}
+
+func GetSanitizeClaudeCodePrompt() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	return cfg.SanitizeClaudeCodePrompt
+}
+
+func UpdatePromptFilter(sanitize bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.SanitizeClaudeCodePrompt = sanitize
+	return Save()
+}
+
+// GetPromptFilterRules returns the current prompt filter rules.
+func GetPromptFilterRules() []PromptFilterRule {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	rules := make([]PromptFilterRule, len(cfg.PromptFilterRules))
+	copy(rules, cfg.PromptFilterRules)
+	return rules
+}
+
+// UpdatePromptFilterRules replaces all prompt filter rules.
+func UpdatePromptFilterRules(rules []PromptFilterRule) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.PromptFilterRules = rules
+	return Save()
 }
 
 // ThinkingConfig holds settings for AI thinking/reasoning mode.
