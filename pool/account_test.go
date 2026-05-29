@@ -274,3 +274,54 @@ func TestGetNextForModelExcludingSkipsExcludedAccount(t *testing.T) {
 		t.Fatalf("expected account b, got %#v", acc)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Reload over-usage filtering
+// ---------------------------------------------------------------------------
+
+func TestReloadKeepsOverQuotaAccountWhenAllowOverUsage(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.AddAccount(config.Account{
+		ID:           "over",
+		Enabled:      true,
+		UsageCurrent: 10,
+		UsageLimit:   10,
+	}); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+	if err := config.UpdateAllowOverUsage(true); err != nil {
+		t.Fatalf("UpdateAllowOverUsage: %v", err)
+	}
+
+	p := newTestPool()
+	p.Reload()
+
+	if got := p.GetNext(); got == nil || got.ID != "over" {
+		t.Fatalf("expected over-quota account to remain routable when allowOverUsage=true, got %#v", got)
+	}
+}
+
+func TestReloadDropsOverQuotaAccountWhenAllowOverUsageDisabled(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.AddAccount(config.Account{
+		ID:           "over",
+		Enabled:      true,
+		UsageCurrent: 10,
+		UsageLimit:   10,
+	}); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	p := newTestPool()
+	p.Reload()
+
+	if got := p.GetNext(); got != nil {
+		t.Fatalf("expected over-quota account to be dropped, got %q", got.ID)
+	}
+}

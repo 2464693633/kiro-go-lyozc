@@ -41,9 +41,11 @@ func GetPool() *AccountPool {
 	return pool
 }
 
-// Reload 从配置重新加载账号
-// 构建加权列表：weight<=1 出现 1 次，weight>=2 出现 weight 次。
-// 额度耗尽的账号是否参与调度由上游 OverageStatus 决定（DISABLED → 跳过）。
+// Reload rebuilds the weighted account list from config.
+// Weight <= 1 → 1 entry; weight >= 2 → weight entries.
+// Over-quota accounts are dropped unless either the per-account upstream
+// Overages switch (OverageStatus=ENABLED) or the global AllowOverUsage
+// setting permits over-quota routing.
 func (p *AccountPool) Reload() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -51,7 +53,7 @@ func (p *AccountPool) Reload() {
 	allowOverUsage := config.GetAllowOverUsage()
 	var weighted []config.Account
 	for _, a := range enabled {
-		if isOverUsageLimit(a) && !isUpstreamOverageEnabled(a) && !allowOverUsage {
+		if isQuotaBlocked(a, allowOverUsage) {
 			continue
 		}
 		w := effectiveWeight(a.Weight)
@@ -107,8 +109,8 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 			continue
 		}
 
-		// 跳过额度已用尽的账号（上游 OverageStatus=ENABLED 或全局 AllowOverUsage 可放行）
-		if isOverUsageLimit(*acc) && !isUpstreamOverageEnabled(*acc) && !allowOverUsage {
+		// Skip accounts whose quota is exhausted, unless overrides apply.
+		if isQuotaBlocked(*acc, allowOverUsage) {
 			seen[acc.ID] = true
 			continue
 		}
@@ -116,7 +118,7 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 		return acc
 	}
 
-	// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
+		// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
 	var best *config.Account
 	var earliest time.Time
 	for i := range p.accounts {
@@ -124,8 +126,7 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 		if excluded != nil && excluded[acc.ID] {
 			continue
 		}
-		// 额度用尽的账号不作为 fallback（除非账号级 OverageStatus=ENABLED 或全局允许超额）
-		if isOverUsageLimit(*acc) && !isUpstreamOverageEnabled(*acc) && !allowOverUsage {
+		if isQuotaBlocked(*acc, allowOverUsage) {
 			continue
 		}
 		if cooldown, ok := p.cooldowns[acc.ID]; ok {
@@ -221,7 +222,7 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 			seen[acc.ID] = true
 			continue
 		}
-		if isOverUsageLimit(*acc) && !isUpstreamOverageEnabled(*acc) && !allowOverUsage {
+		if isQuotaBlocked(*acc, allowOverUsage) {
 			seen[acc.ID] = true
 			continue
 		}
@@ -239,7 +240,7 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 		if !p.accountHasModel(acc.ID, model) {
 			continue
 		}
-		if isOverUsageLimit(*acc) && !isUpstreamOverageEnabled(*acc) && !allowOverUsage {
+		if isQuotaBlocked(*acc, allowOverUsage) {
 			continue
 		}
 		if cooldown, ok := p.cooldowns[acc.ID]; ok {
@@ -477,6 +478,13 @@ func (p *AccountPool) GetAllAccounts() []config.Account {
 
 func isOverUsageLimit(acc config.Account) bool {
 	return acc.UsageLimit > 0 && acc.UsageCurrent >= acc.UsageLimit
+}
+
+// isQuotaBlocked reports whether an over-quota account should be skipped:
+// the per-account upstream Overages switch (OverageStatus=ENABLED) and the
+// global allowOverUsage setting are the two ways to keep it routable.
+func isQuotaBlocked(acc config.Account, allowOverUsage bool) bool {
+	return isOverUsageLimit(acc) && !isUpstreamOverageEnabled(acc) && !allowOverUsage
 }
 
 // isUpstreamOverageEnabled reports whether the upstream Overages switch is ON for this account.
