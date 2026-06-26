@@ -23,7 +23,6 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 		h.sendOpenAIError(w, 400, "invalid_request_error", "Failed to read request body")
 		return
 	}
-	body = maybeCompressRequestBody(body)
 
 	var req ResponsesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -129,9 +128,9 @@ func (h *Handler) handleResponsesNonStream(
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
 ) {
-	startTime := time.Now()
 	excluded := make(map[string]bool)
 	var lastErr error
+	reqStart := time.Now()
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		account := h.pool.GetNextForModelExcluding(model, excluded)
@@ -190,7 +189,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordRequestLog("/v1/responses", model, 200, inputTokens, outputTokens, 0, 0, credits, time.Since(startTime).Milliseconds(), apiKeyID)
+		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
@@ -211,8 +210,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
-	h.recordFailure()
-	h.recordRequestLog("/v1/responses", model, 500, 0, 0, 0, 0, 0, time.Since(startTime).Milliseconds(), apiKeyID)
+	h.recordFailureWithDetails("responses", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
@@ -278,7 +276,6 @@ func (h *Handler) handleResponsesStream(
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
 ) {
-	startTime := time.Now()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -318,6 +315,7 @@ func (h *Handler) handleResponsesStream(
 	excluded := make(map[string]bool)
 	var lastErr error
 	responseStarted := false
+	reqStart := time.Now()
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		account := h.pool.GetNextForModelExcluding(model, excluded)
@@ -491,8 +489,7 @@ func (h *Handler) handleResponsesStream(
 					},
 				},
 			})
-			h.recordFailure()
-			h.recordRequestLog("/v1/responses", model, 500, 0, 0, 0, 0, 0, time.Since(startTime).Milliseconds(), apiKeyID)
+			h.recordFailureWithDetails("responses", model, account.ID, err)
 			return
 		}
 
@@ -539,7 +536,7 @@ func (h *Handler) handleResponsesStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordRequestLog("/v1/responses", model, 200, inputTokens, outputTokens, 0, 0, credits, time.Since(startTime).Milliseconds(), apiKeyID)
+		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt
@@ -575,8 +572,7 @@ func (h *Handler) handleResponsesStream(
 		})
 		return
 	}
-	h.recordFailure()
-	h.recordRequestLog("/v1/responses", model, 500, 0, 0, 0, 0, 0, time.Since(startTime).Milliseconds(), apiKeyID)
+	h.recordFailureWithDetails("responses", model, "", lastErr)
 	send("response.failed", map[string]interface{}{
 		"type": "response.failed",
 		"response": map[string]interface{}{

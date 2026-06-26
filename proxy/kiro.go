@@ -325,12 +325,10 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 	if payload != nil && strings.TrimSpace(payload.ProfileArn) == "" {
 		if profileArn, err := ResolveProfileArn(account); err == nil {
 			payload.ProfileArn = profileArn
+		} else if isProfileArnResolutionSoftError(err) {
+			logger.Debugf("[ProfileArn] Skipped profile ARN resolution for %s: %v", accountEmailForLog(account), err)
 		} else {
-			accountEmail := "<nil>"
-			if account != nil {
-				accountEmail = account.Email
-			}
-			logger.Warnf("[ProfileArn] Failed to resolve profile ARN for %s: %v", accountEmail, err)
+			logger.Warnf("[ProfileArn] Failed to resolve profile ARN for %s: %v", accountEmailForLog(account), err)
 		}
 	}
 
@@ -342,15 +340,18 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		// Update the origin field for the selected endpoint.
 		payload.ConversationState.CurrentMessage.UserInputMessage.Origin = ep.Origin
 
+		// Target the profile's data-plane region; endpoint URLs are declared for us-east-1.
+		epURL := regionalizeURLForProfile(ep.URL, account, payload.ProfileArn)
+
 		reqBody, _ := json.Marshal(payload)
-		req, err := http.NewRequest("POST", ep.URL, bytes.NewReader(reqBody))
+		req, err := http.NewRequest("POST", epURL, bytes.NewReader(reqBody))
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
 		host := ""
-		if parsedURL, parseErr := url.Parse(ep.URL); parseErr == nil {
+		if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
 			host = parsedURL.Host
 		}
 		headerValues := buildStreamingHeaderValues(account, host)
@@ -401,6 +402,13 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		return lastErr
 	}
 	return fmt.Errorf("all endpoints failed")
+}
+
+func accountEmailForLog(account *config.Account) string {
+	if account == nil {
+		return "<nil>"
+	}
+	return account.Email
 }
 
 // ==================== Event Stream Parsing ====================
