@@ -280,15 +280,9 @@ func (p *AccountPool) RecordError(id string, isQuotaError bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// 只记录错误次数，不设置账号冷却。
+	// 适用于官方临时异常时需要反复重试的场景。
 	p.errorCounts[id]++
-
-	if isQuotaError {
-		// 配额错误，冷却 1 小时
-		p.cooldowns[id] = time.Now().Add(time.Hour)
-	} else if p.errorCounts[id] >= 3 {
-		// 连续 3 次错误，冷却 1 分钟
-		p.cooldowns[id] = time.Now().Add(time.Minute)
-	}
 }
 
 // IsAuthFailure reports whether an error indicates the refresh token / credentials
