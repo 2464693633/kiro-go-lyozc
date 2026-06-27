@@ -22,16 +22,16 @@ const tokenRefreshSkewSeconds int64 = 120
 
 // RequestLog stores details about a single API request (success or failure).
 type RequestLog struct {
-	Time      int64  `json:"time"`      // Unix timestamp
-	Endpoint  string `json:"endpoint"`  // claude/openai/responses
-	Model     string `json:"model"`     // Requested model
-	AccountID string `json:"accountId"` // Account used
-	Status    string `json:"status"`    // "success" or "error"
-	Error     string `json:"error"`     // Error message (empty on success)
-	ErrorType string `json:"errorType"` // Error category (empty on success)
-	Tokens    int    `json:"tokens"`    // Total tokens (input+output, 0 on failure)
-	Credits   float64 `json:"credits"`  // Credits consumed (0 on failure)
-	Duration  int64  `json:"duration"`  // Request duration in ms
+	Time      int64   `json:"time"`      // Unix timestamp
+	Endpoint  string  `json:"endpoint"`  // claude/openai/responses
+	Model     string  `json:"model"`     // Requested model
+	AccountID string  `json:"accountId"` // Account used
+	Status    string  `json:"status"`    // "success" or "error"
+	Error     string  `json:"error"`     // Error message (empty on success)
+	ErrorType string  `json:"errorType"` // Error category (empty on success)
+	Tokens    int     `json:"tokens"`    // Total tokens (input+output, 0 on failure)
+	Credits   float64 `json:"credits"`   // Credits consumed (0 on failure)
+	Duration  int64   `json:"duration"`  // Request duration in ms
 }
 
 const requestLogsMaxSize = 500
@@ -1246,6 +1246,12 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		} else if inputTokens <= 0 {
 			inputTokens = estimatedInputTokens
 		}
+		// Re-anchor the cache split to the real upstream input total so
+		// input+creation+read stays consistent (cacheUsage was computed against
+		// the pre-call token estimate).
+		if cacheProfile != nil && realInputTokens > 0 {
+			cacheUsage = cacheUsage.splitAgainstTotal(cacheProfile.TotalInputTokens, inputTokens)
+		}
 		outputContent, extractedReasoning := extractThinkingFromContent(rawContentBuilder.String())
 		thinkingOutput := rawThinkingBuilder.String()
 		if thinking && thinkingOutput == "" && extractedReasoning != "" {
@@ -1258,6 +1264,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
+		h.pool.RecordLatency(account.ID, float64(time.Since(reqStart).Milliseconds()))
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
@@ -1516,10 +1523,17 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		} else if inputTokens <= 0 {
 			inputTokens = estimatedInputTokens
 		}
+		// Re-anchor the cache split to the real upstream input total so
+		// input+creation+read stays consistent (cacheUsage was computed against
+		// the pre-call token estimate).
+		if cacheProfile != nil && realInputTokens > 0 {
+			cacheUsage = cacheUsage.splitAgainstTotal(cacheProfile.TotalInputTokens, inputTokens)
+		}
 		outputTokens = estimateClaudeOutputTokens(finalContent, rawThinkingContent, toolUses)
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
+		h.pool.RecordLatency(account.ID, float64(time.Since(reqStart).Milliseconds()))
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
@@ -1968,6 +1982,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
+		h.pool.RecordLatency(account.ID, float64(time.Since(reqStart).Milliseconds()))
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
@@ -2073,6 +2088,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
+		h.pool.RecordLatency(account.ID, float64(time.Since(reqStart).Milliseconds()))
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 

@@ -22,6 +22,10 @@ const defaultPromptCacheTTL = 5 * time.Minute
 const defaultMinCacheableTokens = 1024
 const opusMinCacheableTokens = 4096
 
+// maxPromptCacheEntries bounds the in-memory cache map; once exceeded, the
+// least-recently-hit entries are evicted (LRU), mirroring kiro-rs's cap.
+const maxPromptCacheEntries = 4096
+
 type promptCacheUsage struct {
 	CacheCreationInputTokens   int
 	CacheReadInputTokens       int
@@ -52,6 +56,7 @@ func minCacheableTokensForModel(model string) int {
 type promptCacheEntry struct {
 	ExpiresAt time.Time
 	TTL       time.Duration
+	LastHit   time.Time // for LRU eviction
 }
 
 type promptCacheTracker struct {
@@ -105,6 +110,7 @@ func (t *promptCacheTracker) Load(path string) {
 		t.entries[e.Fingerprint] = promptCacheEntry{
 			ExpiresAt: exp,
 			TTL:       time.Duration(e.TTLSeconds) * time.Second,
+			LastHit:   now,
 		}
 	}
 }
@@ -269,6 +275,7 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 			continue
 		}
 		entry.ExpiresAt = now.Add(entry.TTL)
+		entry.LastHit = now
 		t.entries[breakpoint.Fingerprint] = entry
 		matchedTokens = minInt(breakpoint.CumulativeTokens, profile.TotalInputTokens)
 		if matchedTokens > lastTokens {
@@ -307,9 +314,11 @@ func (t *promptCacheTracker) Update(accountID string, profile *promptCacheProfil
 		t.entries[breakpoint.Fingerprint] = promptCacheEntry{
 			ExpiresAt: now.Add(breakpoint.TTL),
 			TTL:       breakpoint.TTL,
+			LastHit:   now,
 		}
 	}
 	t.dirty = true
+	t.evictLRULocked()
 }
 
 func (t *promptCacheTracker) pruneExpiredLocked(now time.Time) {
@@ -317,6 +326,74 @@ func (t *promptCacheTracker) pruneExpiredLocked(now time.Time) {
 		if !entry.ExpiresAt.After(now) {
 			delete(t.entries, fingerprint)
 		}
+	}
+}
+
+// evictLRULocked bounds the entries map: when it exceeds maxPromptCacheEntries,
+// the least-recently-hit entries are removed down to the cap. Caller holds t.mu.
+func (t *promptCacheTracker) evictLRULocked() {
+	overflow := len(t.entries) - maxPromptCacheEntries
+	if overflow <= 0 {
+		return
+	}
+	type fpHit struct {
+		fp  [32]byte
+		hit time.Time
+	}
+	all := make([]fpHit, 0, len(t.entries))
+	for fp, e := range t.entries {
+		all = append(all, fpHit{fp, e.LastHit})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].hit.Before(all[j].hit)
+	})
+	for i := 0; i < overflow; i++ {
+		delete(t.entries, all[i].fp)
+	}
+}
+
+// splitAgainstTotal rescales an estimate-domain cache split onto a real input
+// total, preserving input + creation + read == realTotal. The cache-covered
+// fraction of the prompt (in estimate units) is applied to realTotal, then
+// divided into read vs creation by their estimate-domain ratio; the 5m/1h
+// breakdown is scaled to the new creation total.
+func (u promptCacheUsage) splitAgainstTotal(estTotal, realTotal int) promptCacheUsage {
+	if realTotal <= 0 {
+		return u
+	}
+	coveredEst := u.CacheCreationInputTokens + u.CacheReadInputTokens
+	if coveredEst <= 0 || estTotal <= 0 {
+		return promptCacheUsage{} // no cache coverage → all fresh input
+	}
+	ratio := float64(coveredEst) / float64(estTotal)
+	if ratio > 1 {
+		ratio = 1
+	}
+	cacheTotal := int(float64(realTotal)*ratio + 0.5)
+	if cacheTotal > realTotal {
+		cacheTotal = realTotal
+	}
+	read := int(float64(cacheTotal)*float64(u.CacheReadInputTokens)/float64(coveredEst) + 0.5)
+	if read > cacheTotal {
+		read = cacheTotal
+	}
+	if read < 0 {
+		read = 0
+	}
+	creation := cacheTotal - read
+	cache5m, cache1h := creation, 0
+	if u.CacheCreationInputTokens > 0 {
+		cache1h = int(float64(u.CacheCreation1hInputTokens)*float64(creation)/float64(u.CacheCreationInputTokens) + 0.5)
+		if cache1h > creation {
+			cache1h = creation
+		}
+		cache5m = creation - cache1h
+	}
+	return promptCacheUsage{
+		CacheCreationInputTokens:   creation,
+		CacheReadInputTokens:       read,
+		CacheCreation5mInputTokens: cache5m,
+		CacheCreation1hInputTokens: cache1h,
 	}
 }
 
