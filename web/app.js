@@ -2290,6 +2290,7 @@
           const c = a.credentials || {};
           return {
             refreshToken: c.refreshToken || a.refreshToken,
+            accessToken: c.accessToken || a.accessToken,
             clientId: c.clientId || a.clientId,
             clientSecret: c.clientSecret || a.clientSecret,
             region: c.region || a.region,

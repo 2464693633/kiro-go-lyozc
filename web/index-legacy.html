@@ -2851,10 +2851,12 @@
                         const c = a.credentials || {};
                         return {
                             refreshToken: c.refreshToken || a.refreshToken,
+                            // accessToken is REQUIRED for external_idp trust-on-import
+                            // (the JWT's exp becomes ExpiresAt; no live refresh round-trip).
+                            accessToken: c.accessToken || a.accessToken,
                             clientId: c.clientId || a.clientId,
                             clientSecret: c.clientSecret || a.clientSecret,
                             region: c.region || a.region,
-                            // 不传 accessToken，强制后端用 refreshToken 刷新获取新 token
                             authMethod: c.authMethod || a.authMethod,
                             provider: c.provider || a.provider || a.idp,
                             tokenEndpoint: c.tokenEndpoint || a.tokenEndpoint,
