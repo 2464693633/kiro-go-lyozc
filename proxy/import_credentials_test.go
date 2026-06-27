@@ -137,3 +137,39 @@ func TestApiImportCredentialsUsesUpstreamExpiresAt(t *testing.T) {
 
 // authOidcURL captures the current oidc URL builder so the test can restore it.
 func authOidcURL() func(string) string { return auth.GetOIDCTokenURLForTest() }
+
+// TestNormalizeImportAuthMethod pins the auth-method normalization for import,
+// including the key regression: external_idp accounts carry clientId but NO
+// clientSecret, so the old default branch misclassified them as "social".
+func TestNormalizeImportAuthMethod(t *testing.T) {
+	cases := []struct {
+		name           string
+		authMethod     string
+		clientID       string
+		clientSecret   string
+		tokenEndpoint  string
+		want           string
+	}{
+		{"explicit external_idp", "external_idp", "c", "", "https://login.microsoftonline.com/t/oauth2/v2.0/token", "external_idp"},
+		{"azure alias", "AzureAD", "c", "", "https://login.microsoftonline.com/t/oauth2/v2.0/token", "external_idp"},
+		{"microsoft alias", "microsoft", "c", "", "https://login.microsoftonline.com/t/oauth2/v2.0/token", "external_idp"},
+		{"inferred from tokenEndpoint", "", "c", "", "https://login.microsoftonline.com/t/oauth2/v2.0/token", "external_idp"},
+		{"external_idp even with clientSecret", "external_idp", "c", "s", "https://login.microsoftonline.com/t/oauth2/v2.0/token", "external_idp"},
+		{"enterprise stays idc", "enterprise", "c", "s", "", "idc"},
+		{"idc with clientid+secret", "idc", "c", "s", "", "idc"},
+		{"empty + clientid (no secret) -> idc", "", "c", "", "", "idc"},
+		{"empty no clientid -> social", "", "", "", "", "social"},
+		{"social explicit", "social", "", "", "", "social"},
+		{"google alias", "google", "", "", "", "social"},
+		{"unrecognized with clientid+secret -> idc", "weird", "c", "s", "", "idc"},
+		{"unrecognized without secret -> social", "weird", "c", "", "", "social"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeImportAuthMethod(tc.authMethod, tc.clientID, tc.clientSecret, tc.tokenEndpoint); got != tc.want {
+				t.Fatalf("normalizeImportAuthMethod(%q,%q,%q,%q) = %q, want %q",
+					tc.authMethod, tc.clientID, tc.clientSecret, tc.tokenEndpoint, got, tc.want)
+			}
+		})
+	}
+}

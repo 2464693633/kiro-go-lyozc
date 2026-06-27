@@ -3108,6 +3108,58 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// externalIdpAuthMethodAliases are lower-cased authMethod values (or Kiro Account
+// Manager provider labels) that mean "external IdP / enterprise SSO" and must
+// normalize to "external_idp".
+var externalIdpAuthMethodAliases = map[string]bool{
+	"external_idp": true,
+	"azuread":      true,
+	"azure":        true,
+	"entra":        true,
+	"entra-id":     true,
+	"entra_id":     true,
+	"microsoft":    true,
+	"m365":         true,
+	"office365":    true,
+	"external":     true,
+}
+
+// normalizeImportAuthMethod maps a pasted credential JSON's authMethod (plus its
+// clientId/clientSecret/tokenEndpoint) onto one of the three canonical methods
+// ("external_idp" | "idc" | "social"). external_idp MUST be detected before the
+// clientId+clientSecret→idc inference, because external_idp accounts carry clientId
+// but NO clientSecret, so the old default branch misclassified them as "social" and
+// refresh hit the wrong endpoint.
+//
+// It preserves the pre-existing idc/social heuristics:
+//   - empty authMethod + clientId present             -> idc
+//   - empty authMethod, no clientId                   -> social
+//   - "enterprise" (Kiro Account Manager IdC label)   -> idc
+//   - unrecognized non-empty + clientId+clientSecret  -> idc, else social
+func normalizeImportAuthMethod(authMethod, clientID, clientSecret, tokenEndpoint string) string {
+	am := strings.ToLower(strings.TrimSpace(authMethod))
+	switch {
+	case externalIdpAuthMethodAliases[am]:
+		return "external_idp"
+	case tokenEndpoint != "": // infer when not declared explicitly
+		return "external_idp"
+	case am == "social" || am == "google" || am == "github":
+		return "social"
+	case am == "idc" || am == "builderid" || am == "enterprise":
+		return "idc"
+	}
+	if am == "" {
+		if clientID != "" {
+			return "idc"
+		}
+		return "social"
+	}
+	if clientID != "" && clientSecret != "" {
+		return "idc"
+	}
+	return "social"
+}
+
 func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"version":         config.Version,
