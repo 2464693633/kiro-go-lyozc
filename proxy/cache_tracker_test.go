@@ -346,3 +346,56 @@ func TestPromptCacheCapConfigurable(t *testing.T) {
 		t.Fatalf("cap 0.95: expected cache_read ~1000, got %d", usage95.CacheReadInputTokens)
 	}
 }
+
+// TestPromptCacheDiskPersistence verifies C3: entries saved to disk are
+// reloaded on startup, surviving a "restart" (new tracker instance).
+func TestPromptCacheDiskPersistence(t *testing.T) {
+	path := t.TempDir() + "/prompt_cache.json"
+
+	// Tracker 1: store an entry, flush to disk.
+	t1 := newPromptCacheTracker(5 * time.Minute)
+	hasher := sha256.New()
+	writeHashChunk(hasher, "test-cache-value-disk")
+	var fp [32]byte
+	copy(fp[:], hasher.Sum(nil))
+	t1.mu.Lock()
+	t1.entries[fp] = promptCacheEntry{
+		ExpiresAt: time.Now().Add(3 * time.Minute),
+		TTL:       5 * time.Minute,
+	}
+	t1.dirty = true
+	t1.mu.Unlock()
+	t1.flush(path)
+
+	// Tracker 2: load from disk → should have the entry.
+	t2 := newPromptCacheTracker(5 * time.Minute)
+	t2.Load(path)
+	t2.mu.Lock()
+	_, ok := t2.entries[fp]
+	t2.mu.Unlock()
+	if !ok {
+		t.Fatalf("C3: entry not reloaded from disk after 'restart'")
+	}
+
+	// Expired entry should NOT reload.
+	path2 := t.TempDir() + "/expired.json"
+	t1b := newPromptCacheTracker(5 * time.Minute)
+	t1b.mu.Lock()
+	fpExpired := sha256.Sum256([]byte("expired"))
+	t1b.entries[fpExpired] = promptCacheEntry{
+		ExpiresAt: time.Now().Add(-1 * time.Minute), // already expired
+		TTL:       5 * time.Minute,
+	}
+	t1b.dirty = true
+	t1b.mu.Unlock()
+	t1b.flush(path2)
+
+	t3 := newPromptCacheTracker(5 * time.Minute)
+	t3.Load(path2)
+	t3.mu.Lock()
+	_, okExpired := t3.entries[fpExpired]
+	t3.mu.Unlock()
+	if okExpired {
+		t.Fatalf("C3: expired entry should not be reloaded")
+	}
+}

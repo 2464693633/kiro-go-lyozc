@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"kiro-go/config"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,6 +58,8 @@ type promptCacheTracker struct {
 	mu              sync.Mutex
 	entries         map[[32]byte]promptCacheEntry
 	maxSupportedTTL time.Duration
+	dirty           bool
+	stopChan        chan struct{}
 }
 
 func newPromptCacheTracker(maxTTL time.Duration) *promptCacheTracker {
@@ -67,6 +70,97 @@ func newPromptCacheTracker(maxTTL time.Duration) *promptCacheTracker {
 		entries:         make(map[[32]byte]promptCacheEntry),
 		maxSupportedTTL: maxTTL,
 	}
+}
+
+// on-disk format for prompt-cache persistence (C3).
+type promptCacheEntryOnDisk struct {
+	Fingerprint [32]byte
+	ExpiresAt   int64 // unix seconds
+	TTLSeconds  int64
+}
+
+// Load reads persisted cache entries from path. Entries already expired (by the
+// time load finishes) are dropped. Best-effort: a corrupt/missing file is not
+// fatal — the tracker starts empty, same as the pre-C3 behavior.
+func (t *promptCacheTracker) Load(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // missing file = fresh start (normal on first run)
+	}
+	var disk struct {
+		Version int                      `json:"version"`
+		Entries []promptCacheEntryOnDisk `json:"entries"`
+	}
+	if json.Unmarshal(data, &disk) != nil {
+		return // corrupt = fresh start
+	}
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, e := range disk.Entries {
+		exp := time.Unix(e.ExpiresAt, 0)
+		if !exp.After(now) {
+			continue // already expired
+		}
+		t.entries[e.Fingerprint] = promptCacheEntry{
+			ExpiresAt: exp,
+			TTL:       time.Duration(e.TTLSeconds) * time.Second,
+		}
+	}
+}
+
+// startSaveLoop launches a background goroutine that flushes the cache to path
+// every flushInterval (if dirty). Call once after Load. The goroutine exits when
+// stopChan is closed.
+func (t *promptCacheTracker) startSaveLoop(path string, flushInterval time.Duration) {
+	t.stopChan = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(flushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				t.flush(path)
+			case <-t.stopChan:
+				t.flush(path) // final flush
+				return
+			}
+		}
+	}()
+}
+
+func (t *promptCacheTracker) Stop() {
+	if t.stopChan != nil {
+		close(t.stopChan)
+	}
+}
+
+func (t *promptCacheTracker) flush(path string) {
+	t.mu.Lock()
+	if !t.dirty {
+		t.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	entries := make([]promptCacheEntryOnDisk, 0, len(t.entries))
+	for fp, e := range t.entries {
+		if !e.ExpiresAt.After(now) {
+			continue
+		}
+		entries = append(entries, promptCacheEntryOnDisk{
+			Fingerprint: fp,
+			ExpiresAt:   e.ExpiresAt.Unix(),
+			TTLSeconds:  int64(e.TTL.Seconds()),
+		})
+	}
+	t.dirty = false
+	t.mu.Unlock()
+
+	data, _ := json.MarshalIndent(map[string]interface{}{
+		"version": 1,
+		"entries": entries,
+	}, "", "  ")
+	_ = os.WriteFile(path, data, 0600)
 }
 
 func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTokens int) *promptCacheProfile {
@@ -215,6 +309,7 @@ func (t *promptCacheTracker) Update(accountID string, profile *promptCacheProfil
 			TTL:       breakpoint.TTL,
 		}
 	}
+	t.dirty = true
 }
 
 func (t *promptCacheTracker) pruneExpiredLocked(now time.Time) {

@@ -9,6 +9,7 @@ import (
 	"kiro-go/logger"
 	"kiro-go/pool"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -245,6 +246,9 @@ func NewHandler() *Handler {
 		stopStatsSaver:  make(chan struct{}),
 		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL),
 	}
+	cachePath := filepath.Join(config.GetConfigDir(), "prompt_cache.json")
+	h.promptCache.Load(cachePath)
+	h.promptCache.startSaveLoop(cachePath, 30*time.Second)
 	// 启动后台刷新
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)
