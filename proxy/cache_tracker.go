@@ -247,6 +247,7 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 			effectiveCreation = 0
 		}
 		cache5m, cache1h := computePromptCacheTTLBreakdown(profile, 0)
+		cache5m, cache1h = clampCacheBreakdownToCreation(cache5m, cache1h, effectiveCreation)
 		return promptCacheUsage{
 			CacheCreationInputTokens:   effectiveCreation,
 			CacheReadInputTokens:       0,
@@ -286,6 +287,7 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 
 	creation := maxInt(lastTokens-matchedTokens, 0)
 	cache5m, cache1h := computePromptCacheTTLBreakdown(profile, matchedTokens)
+	cache5m, cache1h = clampCacheBreakdownToCreation(cache5m, cache1h, creation)
 	return promptCacheUsage{
 		CacheCreationInputTokens:   creation,
 		CacheReadInputTokens:       matchedTokens,
@@ -666,6 +668,26 @@ func computePromptCacheTTLBreakdown(profile *promptCacheProfile, matchedTokens i
 		previous = current
 	}
 	return cache5m, cache1h
+}
+
+// clampCacheBreakdownToCreation scales the 5m/1h cache-creation split down to
+// creation when the raw breakpoint deltas (uncapped by the 0.85 cacheable ratio)
+// exceed it, preserving the 1h:5m ratio. Guarantees the Anthropic invariant
+// cache_creation_input_tokens == ephemeral_5m + ephemeral_1h.
+func clampCacheBreakdownToCreation(cache5m, cache1h, creation int) (int, int) {
+	total := cache5m + cache1h
+	if total <= creation || total <= 0 {
+		return cache5m, cache1h
+	}
+	scale := float64(creation) / float64(total)
+	one := int(float64(cache1h)*scale + 0.5)
+	if one > creation {
+		one = creation
+	}
+	if one < 0 {
+		one = 0
+	}
+	return creation - one, one
 }
 
 func billedClaudeInputTokens(inputTokens int, usage promptCacheUsage) int {

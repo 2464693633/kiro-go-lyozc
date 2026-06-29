@@ -399,3 +399,34 @@ func TestPromptCacheDiskPersistence(t *testing.T) {
 		t.Fatalf("C3: expired entry should not be reloaded")
 	}
 }
+
+// TestComputeBreakdownClampedToCreation verifies the Anthropic usage invariant
+// cache_creation_input_tokens == ephemeral_5m + ephemeral_1h holds even when the
+// 0.85 cacheable cap reduces creation below the raw breakpoint deltas.
+// Profile: TotalInputTokens=10000 → maxCacheable=8500. A matched breakpoint at
+// 2000 leaves creation=6500, but the uncapped breakdown from matched=2000 to the
+// 10000 breakpoint is 8000 (1h). Without clamping, 5m+1h (8000) != creation (6500).
+func TestComputeBreakdownClampedToCreation(t *testing.T) {
+	tr := newPromptCacheTracker(time.Hour)
+	profile := &promptCacheProfile{
+		Model:            "claude-sonnet-4-6",
+		TotalInputTokens: 10000,
+		Breakpoints: []promptCacheBreakpoint{
+			{Fingerprint: [32]byte{1}, CumulativeTokens: 2000, TTL: 5 * time.Minute},
+			{Fingerprint: [32]byte{2}, CumulativeTokens: 10000, TTL: time.Hour},
+		},
+	}
+	now := time.Now()
+	tr.entries[[32]byte{1}] = promptCacheEntry{ExpiresAt: now.Add(time.Hour), TTL: time.Hour, LastHit: now}
+
+	usage := tr.Compute("acct", profile)
+
+	if usage.CacheCreation5mInputTokens+usage.CacheCreation1hInputTokens != usage.CacheCreationInputTokens {
+		t.Fatalf("breakdown must sum to creation: 5m=%d 1h=%d creation=%d",
+			usage.CacheCreation5mInputTokens, usage.CacheCreation1hInputTokens, usage.CacheCreationInputTokens)
+	}
+	if usage.CacheCreation1hInputTokens > usage.CacheCreationInputTokens {
+		t.Fatalf("1h breakdown must not exceed creation: 1h=%d creation=%d",
+			usage.CacheCreation1hInputTokens, usage.CacheCreationInputTokens)
+	}
+}
