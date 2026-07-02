@@ -492,3 +492,62 @@ func TestPromptCacheMaxEntriesConfigurable(t *testing.T) {
 		t.Fatalf("small value 10 should clamp to 256, got %d", got)
 	}
 }
+
+// TestCacheDoesNotChurnAtHighCapacity is the regression guard for the prefix
+// churn bug: at the production default capacity (131072), a 5000-prefix
+// workload (far above the old 4096 cap) does not evict the oldest seeded prefix
+// before it is replayed, so the replay reads from cache.
+func TestCacheDoesNotChurnAtHighCapacity(t *testing.T) {
+	tr := newPromptCacheTrackerWithCapacity(time.Hour, 131072)
+	now := time.Now()
+	tr.mu.Lock()
+	for i := 0; i < 5000; i++ {
+		var fp [32]byte
+		fp[0] = byte(i)
+		fp[1] = byte(i >> 8)
+		fp[2] = byte(i >> 16)
+		tr.putLocked(fp, now.Add(time.Hour), time.Hour)
+	}
+	tr.evictOverflowLocked()
+	tr.mu.Unlock()
+
+	// The oldest seeded prefix (i=0, all-zero bytes) must survive at cap 131072.
+	var fp0 [32]byte
+	profile := &promptCacheProfile{
+		Model:            "claude-sonnet-4-6",
+		TotalInputTokens: 2000,
+		Breakpoints:      []promptCacheBreakpoint{{Fingerprint: fp0, CumulativeTokens: 2000, TTL: time.Hour}},
+	}
+	if usage := tr.Compute("acct", profile); usage.CacheReadInputTokens == 0 {
+		t.Fatalf("expected old prefix to survive at cap=131072 (no churn); got cache_read=0")
+	}
+}
+
+// TestCacheChurnsAtLowCapacity proves the churn mechanism: at the old cap 4096
+// the same 5000-prefix workload evicts the oldest prefix (i=0), so its replay
+// misses. This is the sensitivity companion to TestCacheDoesNotChurnAtHighCapacity.
+func TestCacheChurnsAtLowCapacity(t *testing.T) {
+	tr := newPromptCacheTrackerWithCapacity(time.Hour, 4096)
+	now := time.Now()
+	tr.mu.Lock()
+	for i := 0; i < 5000; i++ {
+		var fp [32]byte
+		fp[0] = byte(i)
+		fp[1] = byte(i >> 8)
+		fp[2] = byte(i >> 16)
+		tr.putLocked(fp, now.Add(time.Hour), time.Hour)
+	}
+	tr.evictOverflowLocked()
+	tr.mu.Unlock()
+
+	// 5000 > 4096 → LRU evicts the 904 oldest; i=0 (oldest, never re-touched) is gone.
+	var fp0 [32]byte
+	profile := &promptCacheProfile{
+		Model:            "claude-sonnet-4-6",
+		TotalInputTokens: 2000,
+		Breakpoints:      []promptCacheBreakpoint{{Fingerprint: fp0, CumulativeTokens: 2000, TTL: time.Hour}},
+	}
+	if usage := tr.Compute("acct", profile); usage.CacheReadInputTokens != 0 {
+		t.Fatalf("expected oldest prefix churned at cap=4096; got cache_read=%d", usage.CacheReadInputTokens)
+	}
+}
