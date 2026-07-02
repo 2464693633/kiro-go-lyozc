@@ -118,7 +118,8 @@ func loadResponse(id string) (*ResponsesObject, error) {
 
 // loadResponseForOwner loads a stored response and verifies ownership.
 // If the stored response has an OwnerKeyID set and it doesn't match the
-// given apiKeyID, an access-denied error is returned. Responses created
+// given apiKeyID, a generic "not found" error is returned (identical to
+// a missing ID) to prevent response-ID enumeration. Responses created
 // before the ownership field was added (OwnerKeyID=="") are accessible
 // by anyone for backward compatibility.
 func loadResponseForOwner(id, apiKeyID string) (*ResponsesObject, error) {
@@ -127,7 +128,7 @@ func loadResponseForOwner(id, apiKeyID string) (*ResponsesObject, error) {
 		return nil, err
 	}
 	if resp.OwnerKeyID != "" && apiKeyID != "" && resp.OwnerKeyID != apiKeyID {
-		return nil, fmt.Errorf("access denied: response belongs to a different API key")
+		return nil, fmt.Errorf("stored response not found")
 	}
 	return resp, nil
 }
