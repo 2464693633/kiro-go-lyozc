@@ -134,9 +134,9 @@ func kiroProfileRegionCandidates(account *config.Account) []string {
 }
 
 // shouldProbeFallbackRegions reports whether an account's home region is unknown
-// enough to justify probing fallback regions. Only external_idp accounts (region
-// defaulted to us-east-1 at login) and accounts with no region set qualify; every
-// other auth method already carries its authoritative region.
+// enough to justify probing fallback regions. Enterprise IDC and external_idp
+// accounts can store the auth / Identity Center region, while the Kiro profile
+// itself may live in another data-plane region such as eu-central-1.
 func shouldProbeFallbackRegions(account *config.Account) bool {
 	if account == nil {
 		return true
@@ -144,7 +144,8 @@ func shouldProbeFallbackRegions(account *config.Account) bool {
 	if strings.TrimSpace(account.Region) == "" {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(account.AuthMethod), "external_idp")
+	authMethod := strings.ToLower(strings.TrimSpace(account.AuthMethod))
+	return authMethod == "external_idp" || authMethod == "idc"
 }
 
 // GetUsageLimits 获取账户使用量和订阅信息
