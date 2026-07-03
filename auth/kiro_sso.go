@@ -533,6 +533,118 @@ func validateExternalIdpEndpoint(rawURL string) error {
 	return fmt.Errorf("external IdP host %q is not allow-listed", host)
 }
 
+// externalIdpEndpointValidator is the function ValidateExternalIdpEndpoint delegates
+// to. Tests override it via SetExternalIdpValidatorForTest so a happy-path import
+// test can POST against an httptest server (http + 127.0.0.1) that the real
+// allow-list would reject.
+var externalIdpEndpointValidator = validateExternalIdpEndpoint
+
+// ValidateExternalIdpEndpoint is the exported entry point for validating a user- or
+// discovery-supplied external IdP endpoint URL. The credential-import path
+// (package proxy) uses this to guard against SSRF / refresh-token exfiltration: a
+// pasted tokenEndpoint pointing at an internal or attacker-controlled host would
+// otherwise cause the server to POST the account's refresh token there.
+func ValidateExternalIdpEndpoint(rawURL string) error {
+	return externalIdpEndpointValidator(rawURL)
+}
+
+// issuerFromAccessTokenJWT decodes an unverified Azure AD access token's payload
+// and returns its iss claim (e.g. https://login.microsoftonline.com/<tenant>/v2.0).
+// No signature verification: this is used only to classify a pasted credential and
+// recover the Azure tenant, never to trust the token itself. Returns "" if
+// accessToken is not a JWT or has no iss.
+func issuerFromAccessTokenJWT(accessToken string) string {
+	raw := strings.TrimSpace(accessToken)
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Iss
+}
+
+// ExpFromAccessTokenJWT decodes an unverified access token's payload and returns
+// its exp claim (Unix seconds). No signature verification: this is used only to
+// set a trustworthy ExpiresAt when importing an external_idp credential WITHOUT a
+// live refresh round-trip (trust-on-import), never to authenticate the token.
+// Returns 0 if accessToken is not a JWT or has no exp.
+func ExpFromAccessTokenJWT(accessToken string) int64 {
+	raw := strings.TrimSpace(accessToken)
+	if raw == "" {
+		return 0
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) < 2 {
+		return 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return 0
+	}
+	return claims.Exp
+}
+
+// DeriveExternalIdpEndpoints reconstructs the Microsoft / Azure AD token endpoint,
+// OIDC issuer, and default scopes for an external-IdP credential. The Azure tenant
+// is recovered from userId (Kiro Account Manager exports carry it at account
+// level) or, failing that, from the accessToken JWT's issuer (bare blobs with only
+// clientId + accessToken + refreshToken). This lets the credential-import path
+// accept those shapes even though they omit tokenEndpoint/issuerUrl/scopes.
+//
+// userId / iss look like: https://login.microsoftonline.com/<tenant>/v2.0.<oid>
+// Returns empty strings if neither source yields a usable tenant, so the caller
+// can fall back to its "requires clientId and tokenEndpoint" error. The derived
+// tokenEndpoint is re-validated against the IdP allow-list by the caller, so a
+// non-allow-listed host (or the test's http+127.0.0.1 fake) is still gated.
+func DeriveExternalIdpEndpoints(userId, clientID, accessToken string) (tokenEndpoint, issuerURL, scopes string) {
+	src := strings.TrimSpace(userId)
+	if src == "" {
+		// Bare credential blobs carry only clientId + accessToken: recover the
+		// tenant from the access token's JWT issuer.
+		src = strings.TrimSpace(issuerFromAccessTokenJWT(accessToken))
+	}
+	if src == "" {
+		return "", "", ""
+	}
+	u, err := url.Parse(src)
+	if err != nil || u.Host == "" {
+		return "", "", ""
+	}
+	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(segments) == 0 || segments[0] == "" {
+		return "", "", ""
+	}
+	tenant := segments[0]
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	tokenEndpoint = fmt.Sprintf("%s://%s/%s/oauth2/v2.0/token", scheme, u.Host, tenant)
+	issuerURL = fmt.Sprintf("%s://%s/%s/v2.0", scheme, u.Host, tenant)
+	if clientID != "" {
+		scopes = fmt.Sprintf("api://%s/codewhisperer:conversations api://%s/codewhisperer:completions offline_access", clientID, clientID)
+	}
+	return tokenEndpoint, issuerURL, scopes
+}
+
 // oidcDiscover fetches the OpenID Connect discovery document for issuerURL and
 // returns its authorization and token endpoints. The issuer and BOTH discovered
 // endpoints are validated against the IdP host allow-list; redirects are NOT

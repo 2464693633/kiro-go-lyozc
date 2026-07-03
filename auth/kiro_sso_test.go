@@ -209,3 +209,97 @@ func TestRefreshExternalIdpTokenRequiresClientAndEndpoint(t *testing.T) {
 		t.Fatalf("expected error when tokenEndpoint is empty")
 	}
 }
+
+// TestValidateExternalIdpEndpointAcceptsAllowListed verifies the exported validator
+// accepts real Azure / Microsoft 365 token endpoints (commercial, us-gov, china).
+func TestValidateExternalIdpEndpointAcceptsAllowListed(t *testing.T) {
+	for _, raw := range []string{
+		"https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+		"https://login.microsoftonline.us/tenant/v2.0",
+		"https://login.partner.microsoftonline.cn/tenant/oauth2/v2.0/token",
+	} {
+		if err := ValidateExternalIdpEndpoint(raw); err != nil {
+			t.Errorf("expected %q accepted, got %v", raw, err)
+		}
+	}
+}
+
+// TestValidateExternalIdpEndpointRejectsUnsafe verifies the validator rejects the
+// SSRF shapes a pasted credential JSON could carry: cleartext http, IP literals,
+// and non-allow-listed hosts.
+func TestValidateExternalIdpEndpointRejectsUnsafe(t *testing.T) {
+	for _, raw := range []string{
+		"http://login.microsoftonline.com/x",  // not https
+		"https://127.0.0.1/oauth/token",       // IP literal
+		"https://evil.example.com/oauth/token", // not allow-listed
+	} {
+		if err := ValidateExternalIdpEndpoint(raw); err == nil {
+			t.Errorf("expected %q rejected, got nil", raw)
+		}
+	}
+}
+
+// TestSetExternalIdpValidatorForTestSwapsAndRestores verifies the test seam lets a
+// test override (and restore) the validator so happy-path import tests can POST
+// against an httptest server (http + 127.0.0.1) that the real allow-list rejects.
+func TestSetExternalIdpValidatorForTestSwapsAndRestores(t *testing.T) {
+	restore := SetExternalIdpValidatorForTest(func(string) error { return nil })
+	defer SetExternalIdpValidatorForTest(restore)
+	if err := ValidateExternalIdpEndpoint("https://evil.example.com/x"); err != nil {
+		t.Fatalf("expected swapped no-op validator to accept, got %v", err)
+	}
+}
+
+// TestDeriveExternalIdpEndpoints verifies the endpoints+scopes are reconstructed
+// from userId (Kiro export) OR the accessToken JWT issuer (bare blobs), plus the
+// Kiro client ID. This is what lets the import path accept shapes that omit
+// tokenEndpoint/issuerUrl/scopes.
+func TestDeriveExternalIdpEndpoints(t *testing.T) {
+	const userID = "https://login.microsoftonline.com/5fbc183e-3d09-4043-b36f-0c49d3665977/v2.0.8db0e2eb-d491-4a1a-98f1-cbdc12bb60a0"
+	const clientID = "fa6d79bf-cdaa-495e-8359-78aab7c7cd9b"
+	const wantTE = "https://login.microsoftonline.com/5fbc183e-3d09-4043-b36f-0c49d3665977/oauth2/v2.0/token"
+	const wantIss = "https://login.microsoftonline.com/5fbc183e-3d09-4043-b36f-0c49d3665977/v2.0"
+
+	// From userId (Kiro export carries it at account level).
+	te, iss, sc := DeriveExternalIdpEndpoints(userID, clientID, "")
+	if te != wantTE || iss != wantIss {
+		t.Fatalf("from userId: te=%q iss=%q (want %q / %q)", te, iss, wantTE, wantIss)
+	}
+	if !strings.Contains(sc, "api://"+clientID+"/codewhisperer:conversations") || !strings.Contains(sc, "offline_access") {
+		t.Fatalf("scopes: got %q", sc)
+	}
+
+	// From the accessToken JWT issuer (bare blobs carry no userId).
+	jwt := "eyJhbGciOiJub25lIn0." + base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"`+userID+`"}`)) + "."
+	te2, iss2, sc2 := DeriveExternalIdpEndpoints("", clientID, jwt)
+	if te2 != wantTE || iss2 != wantIss {
+		t.Fatalf("from accessToken JWT: te=%q iss=%q (want %q / %q)", te2, iss2, wantTE, wantIss)
+	}
+	if sc2 == "" {
+		t.Fatalf("scopes from JWT path: got empty")
+	}
+
+	// Neither source → all-empty (caller falls back to its 400).
+	if te3, iss3, sc3 := DeriveExternalIdpEndpoints("", clientID, ""); te3 != "" || iss3 != "" || sc3 != "" {
+		t.Fatalf("empty sources should yield all-empty, got %q %q %q", te3, iss3, sc3)
+	}
+	// userId takes precedence over accessToken.
+	if te4, _, _ := DeriveExternalIdpEndpoints(userID, clientID, jwt); te4 != wantTE {
+		t.Fatalf("userId should take precedence over accessToken, got %q", te4)
+	}
+}
+
+// TestExpFromAccessTokenJWT pins the exp extraction used for trust-on-import.
+func TestExpFromAccessTokenJWT(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"x","exp":2000000000}`))
+	jwt := "eyJhbGciOiJub25lIn0." + payload + "."
+	if got := ExpFromAccessTokenJWT(jwt); got != 2000000000 {
+		t.Fatalf("ExpFromAccessTokenJWT: got %d, want 2000000000", got)
+	}
+	if got := ExpFromAccessTokenJWT(""); got != 0 {
+		t.Fatalf("empty → 0, got %d", got)
+	}
+	if got := ExpFromAccessTokenJWT("not-a-jwt"); got != 0 {
+		t.Fatalf("non-JWT → 0, got %d", got)
+	}
+}

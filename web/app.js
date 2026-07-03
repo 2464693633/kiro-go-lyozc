@@ -2290,11 +2290,19 @@
           const c = a.credentials || {};
           return {
             refreshToken: c.refreshToken || a.refreshToken,
+            accessToken: c.accessToken || a.accessToken,
             clientId: c.clientId || a.clientId,
             clientSecret: c.clientSecret || a.clientSecret,
             region: c.region || a.region,
             authMethod: c.authMethod || a.authMethod,
-            provider: c.provider || a.provider || a.idp
+            provider: c.provider || a.provider || a.idp,
+            tokenEndpoint: c.tokenEndpoint || a.tokenEndpoint,
+            issuerUrl: c.issuerUrl || a.issuerUrl,
+            scopes: c.scopes || a.scopes,
+            id: a.id,
+            email: c.email || a.email,
+            profileArn: c.profileArn || a.profileArn,
+            userId: a.userId
           };
         });
       } else {
@@ -2316,11 +2324,19 @@
     let ok = 0, fail = 0, newIds = [];
     for (const item of items) {
       if (!item.refreshToken) { fail++; continue; }
-      let authMethod = item.authMethod || '';
-      if (item.clientId && item.clientSecret) authMethod = 'idc';
-      else if (!authMethod || authMethod === 'social') authMethod = 'social';
-      else authMethod = authMethod.toLowerCase() === 'idc' ? 'idc' : 'social';
+      const EXTERNAL_IDP = ['external_idp','azuread','azure','entra','entra-id','microsoft','m365','office365','external'];
+      let authMethod = (item.authMethod || '').toLowerCase();
+      if (EXTERNAL_IDP.includes(authMethod) || item.tokenEndpoint) {
+        authMethod = 'external_idp';
+      } else if (item.clientId && item.clientSecret) {
+        authMethod = 'idc';
+      } else if (!authMethod || authMethod === 'social') {
+        authMethod = 'social';
+      } else {
+        authMethod = authMethod === 'idc' ? 'idc' : 'social';
+      }
       let provider = item.provider || '';
+      if (!provider && authMethod === 'external_idp') provider = 'AzureAD';
       if (!provider && authMethod === 'social') provider = 'Google';
       if (!provider && authMethod === 'idc') provider = 'BuilderId';
       const payload = {
@@ -2329,7 +2345,13 @@
         clientId: item.clientId || '',
         clientSecret: item.clientSecret || '',
         authMethod, provider,
-        region: item.region || 'us-east-1'
+        region: item.region || 'us-east-1',
+        tokenEndpoint: item.tokenEndpoint || '',
+        issuerUrl: item.issuerUrl || '',
+        scopes: item.scopes || '',
+        ...(item.id ? { id: item.id } : {}),
+        ...(item.email ? { email: item.email } : {}),
+        ...(item.profileArn ? { profileArn: item.profileArn } : {})
       };
       try {
         const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify(payload) });
