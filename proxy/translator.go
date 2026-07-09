@@ -287,14 +287,24 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 
 	// 构建最终内容
 	finalContent := ""
+	toolResultsFolded := false
 	if currentContent != "" {
 		finalContent = currentContent
 	} else if len(currentImages) > 0 {
 		finalContent = normalizeUserContent("", true)
 	} else if len(currentToolResults) > 0 {
 		finalContent = buildToolResultsContinuation(currentToolResults)
+		toolResultsFolded = true
 	} else {
 		finalContent = minimalFallbackUserContent
+	}
+
+	// Orphaned current tool results (no matching assistant tool turn in history)
+	// cannot stay structured — upstream accepts only a single active tool turn and
+	// these have none to answer — so fold their text into the message instead of
+	// losing it (e.g. a tool's textual output alongside an extracted image).
+	if !keepCurrentToolResults && len(currentToolResults) > 0 && !toolResultsFolded {
+		finalContent = joinHistoryText(finalContent, buildToolResultsContinuation(currentToolResults))
 	}
 
 	// 转换工具
@@ -1232,14 +1242,21 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 
 	// 构建最终内容
 	finalContent := currentContent
+	toolResultsFolded := false
 	if finalContent == "" {
 		if len(currentImages) > 0 {
 			finalContent = normalizeUserContent("", true)
 		} else if len(currentToolResults) > 0 {
 			finalContent = buildToolResultsContinuation(currentToolResults)
+			toolResultsFolded = true
 		} else {
 			finalContent = minimalFallbackUserContent
 		}
+	}
+	// Orphaned current tool results: see ClaudeToKiro — fold them into the message
+	// text instead of dropping them when an image placeholder or user text was chosen.
+	if !keepCurrentToolResults && len(currentToolResults) > 0 && !toolResultsFolded {
+		finalContent = joinHistoryText(finalContent, buildToolResultsContinuation(currentToolResults))
 	}
 
 	// 转换工具

@@ -662,6 +662,25 @@ func RefreshTokenExists(refreshToken string) bool {
 	return false
 }
 
+// FindAccountIDByRefreshToken returns the id of the account that already holds
+// the given refresh token, or "" if none. Used by the single credential-import
+// path to update an existing entry in place when a backup is re-imported, rather
+// than minting a fresh id and leaving two live accounts sharing the same token.
+// Mirrors the refresh-token dedup the bulk path applies (AddAccounts).
+func FindAccountIDByRefreshToken(refreshToken string) string {
+	if refreshToken == "" {
+		return ""
+	}
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].RefreshToken == refreshToken {
+			return cfg.Accounts[i].ID
+		}
+	}
+	return ""
+}
+
 func SuspendAccountTemporarily(id, reason string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()

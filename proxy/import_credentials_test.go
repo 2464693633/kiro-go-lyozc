@@ -81,6 +81,49 @@ func TestApiImportCredentialsRejectsWhenRefreshFails(t *testing.T) {
 // TestApiImportCredentialsUsesUpstreamExpiresAt verifies the happy path: when
 // refresh succeeds, the persisted ExpiresAt reflects the upstream expiresIn,
 // not a hard-coded 300s.
+// TestApiImportCredentialsDedupsByRefreshToken verifies the invariant stated at
+// config.go:437 / handler.go:3234 ("re-importing a backup never creates a
+// duplicate entry"): re-importing the same credential JSON must update the
+// existing account in place rather than mint a fresh id and leave two live
+// accounts sharing the same refresh token (which causes interleaved rotation
+// conflicts). The bulk import path already dedups on refresh token; the single
+// import path did not.
+func TestApiImportCredentialsDedupsByRefreshToken(t *testing.T) {
+	cfgFile := t.TempDir() + "/config.json"
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	defer installCleanAuthClient(t)()
+
+	// Fake OIDC issues a valid access token and echoes a fixed refresh token, so
+	// both imports resolve the same persisted RefreshToken and reach the dedup.
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"accessToken":"at-new","refreshToken":"rt-shared","expiresIn":3600,"profileArn":"arn:aws:codewhisperer:profile/test"}`)
+	}))
+	defer fake.Close()
+
+	oldOIDC := authOidcURL()
+	auth.SetOIDCTokenURLForTest(func(string) string { return fake.URL })
+	defer auth.SetOIDCTokenURLForTest(oldOIDC)
+
+	h := &Handler{pool: accountpool.GetPool()}
+	body := `{"refreshToken":"rt-good","clientId":"c","clientSecret":"s","authMethod":"idc","region":"us-east-1"}`
+
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		h.apiImportCredentials(rec, httptest.NewRequest("POST", "/auth/credentials", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("import #%d failed: status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	accs := config.GetAccounts()
+	if len(accs) != 1 {
+		t.Fatalf("re-importing the same credential must update in place, not create a duplicate sharing the refresh token; got %d accounts", len(accs))
+	}
+}
+
 func TestApiImportCredentialsUsesUpstreamExpiresAt(t *testing.T) {
 	cfgFile := t.TempDir() + "/config.json"
 	if err := config.Init(cfgFile); err != nil {

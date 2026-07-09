@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"kiro-go/config"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -177,10 +178,109 @@ func (t *promptCacheTracker) flush(path string) {
 		"version": 1,
 		"entries": entries,
 	}, "", "  ")
-	_ = os.WriteFile(path, data, 0600)
+	_ = writeFileAtomic(path, data)
+}
+
+// writeFileAtomic writes data to path via a temp file in the same directory
+// then renames it into place, so a crash mid-flush cannot leave a truncated
+// state file (which would silently reset the cache on the next Load). Mirrors
+// the Python shim's tmp+os.replace path. os.Rename is atomic on the same
+// filesystem; the same-dir temp guarantees same-fs. Best-effort: a rename
+// failure falls back to a direct write (matching pre-existing behavior).
+func writeFileAtomic(path string, data []byte) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0o700)
+	}
+	tmp, err := os.CreateTemp(dirOf(path), ".prompt-cache-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			tmp.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	closed = true
+	_ = os.Chmod(tmpName, 0o600)
+	if err := os.Rename(tmpName, path); err != nil {
+		return os.WriteFile(path, data, 0o600)
+	}
+	return nil
+}
+
+func dirOf(path string) string {
+	if dir := filepath.Dir(path); dir != "" {
+		return dir
+	}
+	return "."
+}
+
+// interfaceHasCacheControl reports whether the value tree contains any
+// "cache_control" key on a dict node. Mirrors the Python shim's has_cache_control:
+// cache_control can nest inside system blocks or message content blocks.
+func interfaceHasCacheControl(v interface{}) bool {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		if _, ok := val["cache_control"]; ok {
+			return true
+		}
+		for _, x := range val {
+			if interfaceHasCacheControl(x) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, x := range val {
+			if interfaceHasCacheControl(x) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// claudeRequestHasCacheControl reports whether any cache_control marker appears
+// in the request's system or message content. ClaudeTool is a typed struct with
+// no cache_control field, so only system/messages can carry one. Used as the
+// BuildClaudeProfile fast-path guard: no marker → no breakpoints possible → nil.
+func claudeRequestHasCacheControl(req *ClaudeRequest) bool {
+	if req == nil {
+		return false
+	}
+	if interfaceHasCacheControl(req.System) {
+		return true
+	}
+	for _, m := range req.Messages {
+		if interfaceHasCacheControl(m.Content) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTokens int) *promptCacheProfile {
+	// Fast path: if no block carries cache_control, no breakpoint can be
+	// produced — explicit breakpoints need TTL > 0, and implicit message-end
+	// breakpoints only fire once an explicit one has set activeTTL > 0. So a
+	// request with zero cache_control markers yields zero breakpoints and a nil
+	// profile. Skipping the flatten/canonicalize/hash work avoids O(prompt) work
+	// for non-Claude-Code clients that send large prompts without cache_control.
+	// Outcome-identical to the full pass (returns nil iff the pass produces none).
+	if !claudeRequestHasCacheControl(req) {
+		return nil
+	}
 	blocks := flattenClaudeCacheBlocks(req)
 	if len(blocks) == 0 {
 		return nil

@@ -282,6 +282,71 @@ func TestRefreshAccountInfoDoesNotDisableBuilderIDWhenProfileLookupUnsupported(t
 	}
 }
 
+// TestRefreshAccountInfoDoesNotBanOnTransientUpstreamError guards the false-ban:
+// a transient NON-auth upstream failure (HTTP 5xx) whose body happens to contain
+// "expired"/"invalid" must NOT be misclassified as an authentication failure and
+// must NOT disable + BAN an otherwise-healthy account. Only genuine auth errors
+// (HTTP 401/403, invalid_grant, expired-token variants) warrant a ban.
+func TestRefreshAccountInfoDoesNotBanOnTransientUpstreamError(t *testing.T) {
+	clearProfileArnResolutionCooldowns()
+	t.Cleanup(clearProfileArnResolutionCooldowns)
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Init(configPath); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	account := config.Account{
+		ID:          "acct-transient-500",
+		Email:       "user@example.com",
+		AccessToken: "access-token",
+		Provider:    "BuilderId",
+		Region:      "us-east-1",
+		Enabled:     true,
+	}
+	if err := config.AddAccount(account); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	kiroRestHttpStore.Store(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/ListAvailableProfiles":
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Body:       io.NopCloser(strings.NewReader(`{"message":"AWS Builder ID is not supported for this operation.","reason":null}`)),
+					Header:     make(http.Header),
+				}, nil
+			case "/getUsageLimits":
+				// Transient 5xx whose body text contains "expired" — must not be
+				// read as an auth/token failure.
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Body:       io.NopCloser(strings.NewReader(`{"message":"The cached configuration is expired, please retry"}`)),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request path %s", req.URL.Path)
+				return nil, nil
+			}
+		}),
+	})
+	t.Cleanup(func() { InitKiroHttpClient("") })
+
+	requestAccount := account
+	if _, err := RefreshAccountInfo(&requestAccount); err == nil {
+		t.Fatalf("expected GetUsageLimits 500 error to propagate, got nil")
+	}
+
+	accounts := config.GetAccounts()
+	if len(accounts) != 1 {
+		t.Fatalf("expected one account, got %d", len(accounts))
+	}
+	if !accounts[0].Enabled || accounts[0].BanStatus == "BANNED" {
+		t.Fatalf("transient 5xx with body containing \"expired\" must NOT ban the account, got enabled=%v banStatus=%q banReason=%q",
+			accounts[0].Enabled, accounts[0].BanStatus, accounts[0].BanReason)
+	}
+}
+
 func clearProfileArnResolutionCooldowns() {
 	profileArnResolutionCooldowns.Range(func(key, _ interface{}) bool {
 		profileArnResolutionCooldowns.Delete(key)

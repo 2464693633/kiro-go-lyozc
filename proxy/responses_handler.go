@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"kiro-go/config"
+	"kiro-go/logger"
 	"net/http"
 	"strings"
 	"time"
@@ -46,8 +47,12 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	if req.PreviousResponseID != "" {
 		prev, loadErr := loadResponseForOwner(req.PreviousResponseID, apiKeyID)
 		if loadErr != nil {
-			h.sendOpenAIError(w, 404, "invalid_request_error",
-				fmt.Sprintf("previous_response_id not found: %v", loadErr))
+			// Log the real reason server-side for ops, but return a single fixed
+			// generic message to the client so a bad id never leaks the server's
+			// filesystem path (the raw os.PathError) nor distinguishes missing vs
+			// expired vs not-owner.
+			logger.Warnf("[Responses] previous_response_id %q load failed: %v", req.PreviousResponseID, loadErr)
+			h.sendOpenAIError(w, 404, "invalid_request_error", "previous_response_id not found")
 			return
 		}
 		historyMessages = expandPreviousResponseHistory(prev)

@@ -289,25 +289,11 @@ func (h *Handler) refreshAllAccounts() {
 			continue
 		}
 
-		// 检查 token 是否需要刷新
-		if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
-			newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
-			if err != nil {
-				logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
-				h.handleAccountFailure(account, err)
-				continue
-			}
-			account.AccessToken = newAccessToken
-			if newRefreshToken != "" {
-				account.RefreshToken = newRefreshToken
-			}
-			account.ExpiresAt = newExpiresAt
-			config.UpdateAccountToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
-			h.pool.UpdateToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
-			if profileArn != "" {
-				account.ProfileArn = profileArn
-				config.UpdateAccountProfileArn(account.ID, profileArn)
-			}
+		// 刷新 token（去重 + 持久化由 refreshAccountToken 统一处理）
+		if err := h.refreshAccountToken(account, false); err != nil {
+			logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
+			h.handleAccountFailure(account, err)
+			continue
 		}
 
 		// 刷新账户信息
@@ -2135,22 +2121,34 @@ func (h *Handler) sendOpenAIError(w http.ResponseWriter, status int, errType, me
 	})
 }
 
-// ensureValidToken 确保 token 有效
-func (h *Handler) ensureValidToken(account *config.Account) error {
-	if account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds {
+// refreshAccountToken is the single locked entry point for refreshing an
+// account's access token. Every caller — the background refresh sweep, the
+// per-request ensureValidToken, and the admin refresh endpoints — must funnel
+// through here so concurrent refreshes of the same account deduplicate rather
+// than racing the IdP. IdPs that rotate refresh tokens (one-time-use — e.g.
+// external_idp / Azure AD; see the comment in auth/oidc.go refreshExternalIdpToken)
+// reject a refresh that reuses an already-consumed token with invalid_grant, and
+// that flows into handleAccountFailure → disableAccount("BANNED").
+//
+// force bypasses the not-near-expiry fast path for explicit admin "refresh now"
+// actions and the 401/403 retry path.
+func (h *Handler) refreshAccountToken(account *config.Account, force bool) error {
+	if !force && (account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds) {
 		return nil
 	}
 
 	h.tokenRefreshMu.Lock()
 	defer h.tokenRefreshMu.Unlock()
 
-	// Another concurrent request may have refreshed this account while we waited.
+	// Another goroutine may have refreshed this account while we waited on the
+	// lock. Adopt the freshest persisted token before refreshing so we never
+	// reuse an already-rotated (one-time-use) refresh token.
 	if latest := h.pool.GetByID(account.ID); latest != nil {
 		account.AccessToken = latest.AccessToken
 		account.RefreshToken = latest.RefreshToken
 		account.ExpiresAt = latest.ExpiresAt
 		account.ProfileArn = latest.ProfileArn
-		if account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds {
+		if !force && (account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds) {
 			return nil
 		}
 	}
@@ -2160,7 +2158,6 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 		return err
 	}
 
-	// 更新内存
 	h.pool.UpdateToken(account.ID, accessToken, refreshToken, expiresAt)
 	account.AccessToken = accessToken
 	if refreshToken != "" {
@@ -2171,11 +2168,13 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 		account.ProfileArn = profileArn
 		config.UpdateAccountProfileArn(account.ID, profileArn)
 	}
-
-	// 持久化
 	config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt)
-
 	return nil
+}
+
+// ensureValidToken 确保 token 有效
+func (h *Handler) ensureValidToken(account *config.Account) error {
+	return h.refreshAccountToken(account, false)
 }
 
 // ==================== 管理 API ====================
@@ -2637,20 +2636,10 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 				failCount++
 				continue
 			}
-			// 刷新 token
+			// 刷新 token（去重 + 持久化由 refreshAccountToken 统一处理）
 			if account.RefreshToken != "" {
-				if newAccess, newRefresh, newExpires, profileArn, err := auth.RefreshToken(account); err == nil {
-					account.AccessToken = newAccess
-					if newRefresh != "" {
-						account.RefreshToken = newRefresh
-					}
-					account.ExpiresAt = newExpires
-					config.UpdateAccountToken(id, newAccess, newRefresh, newExpires)
-					if profileArn != "" {
-						account.ProfileArn = profileArn
-						config.UpdateAccountProfileArn(id, profileArn)
-					}
-					h.pool.UpdateToken(id, newAccess, newRefresh, newExpires)
+				if err := h.refreshAccountToken(account, true); err != nil {
+					logger.Warnf("[ApiBatch] Token refresh failed for %s: %v", account.Email, err)
 				}
 			}
 			// 刷新账户信息
@@ -3231,10 +3220,19 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 	if provider == "" && req.AuthMethod == "external_idp" {
 		provider = "AzureAD"
 	}
-	// Reuse a pasted record's id when it does not collide; otherwise mint a fresh
-	// one so re-importing a backup never creates a duplicate entry.
+	// Re-importing a backup must never create a duplicate entry. If an account
+	// with the same (resolved) refresh token already exists, update it in place
+	// (reusing its id) instead of minting a fresh id and leaving two live
+	// accounts sharing the token — which would interleave refresh/rotation
+	// conflicts. Mirrors the bulk import path's dedup (config.AddAccounts).
+	existingID := ""
+	if req.RefreshToken != "" {
+		existingID = config.FindAccountIDByRefreshToken(req.RefreshToken)
+	}
 	id := req.ID
-	if id == "" || config.AccountIDExists(id) {
+	if existingID != "" {
+		id = existingID
+	} else if id == "" || config.AccountIDExists(id) {
 		id = auth.GenerateAccountID()
 	}
 	account := config.Account{
@@ -3256,10 +3254,19 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		Scopes:        req.Scopes,
 	}
 
-	if err := config.AddAccount(account); err != nil {
-		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
+	if existingID != "" {
+		// Update the existing entry in place rather than creating a duplicate.
+		if err := config.UpdateAccount(id, account); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	} else {
+		if err := config.AddAccount(account); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	h.pool.Reload()
@@ -3555,22 +3562,7 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		if account.RefreshToken == "" {
 			return nil
 		}
-		newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
-		if err != nil {
-			return err
-		}
-		account.AccessToken = newAccessToken
-		if newRefreshToken != "" {
-			account.RefreshToken = newRefreshToken
-		}
-		account.ExpiresAt = newExpiresAt
-		config.UpdateAccountToken(id, newAccessToken, newRefreshToken, newExpiresAt)
-		h.pool.UpdateToken(id, newAccessToken, newRefreshToken, newExpiresAt)
-		if profileArn != "" {
-			account.ProfileArn = profileArn
-			config.UpdateAccountProfileArn(id, profileArn)
-		}
-		return nil
+		return h.refreshAccountToken(account, true)
 	}
 
 	// 检查 token 是否快过期，先刷新
@@ -3597,7 +3589,7 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		}
 
 		// 如果是 403/401，说明 token 无效，尝试刷新后重试
-		if strings.Contains(errMsg, "403") || strings.Contains(errMsg, "401") || strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "expired") {
+		if isAuthErrorMessage(errMsg) {
 			if refreshErr := refreshTokenIfNeeded(); refreshErr == nil {
 				// 重试
 				info, err = RefreshAccountInfo(account)

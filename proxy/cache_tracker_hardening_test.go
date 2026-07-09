@@ -1,6 +1,10 @@
 package proxy
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,5 +109,98 @@ func TestComputeSetsDirtyOnCacheHit(t *testing.T) {
 
 	if !tr.dirty {
 		t.Fatal("Compute must set dirty on a cache hit so the refreshed TTL/LastHit is persisted")
+	}
+}
+
+// TestWriteFileAtomicPersistsAndLeavesNoTemp verifies the atomic-flush path:
+// flush writes a complete, reloadable file via tmp+rename, with no stray
+// .prompt-cache-*.tmp left in the directory (which would indicate a torn write).
+func TestWriteFileAtomicPersistsAndLeavesNoTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/prompt_cache.json"
+
+	tr := newPromptCacheTracker(5 * time.Minute)
+	hasher := sha256.New()
+	writeHashChunk(hasher, "atomic-flush-marker")
+	var fp [32]byte
+	copy(fp[:], hasher.Sum(nil))
+	tr.mu.Lock()
+	tr.putLocked(fp, time.Now().Add(10*time.Minute), 5*time.Minute)
+	tr.dirty = true
+	tr.mu.Unlock()
+	tr.flush(path)
+
+	// File must be present and valid JSON (reloadable by Load).
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected flushed state file, got error: %v", err)
+	}
+	var disk struct {
+		Version int                      `json:"version"`
+		Entries []promptCacheEntryOnDisk `json:"entries"`
+	}
+	if json.Unmarshal(raw, &disk) != nil {
+		t.Fatalf("flushed file is not valid JSON: %s", string(raw))
+	}
+	if len(disk.Entries) != 1 {
+		t.Fatalf("expected 1 persisted entry, got %d", len(disk.Entries))
+	}
+
+	// No torn-write temp files should remain after a successful flush.
+	entries, _ := os.ReadDir(dir)
+	for _, f := range entries {
+		if strings.HasSuffix(f.Name(), ".tmp") {
+			t.Fatalf("leftover temp file after flush: %s", f.Name())
+		}
+	}
+
+	// Reload via Load confirms the round-trip.
+	t2 := newPromptCacheTracker(5 * time.Minute)
+	t2.Load(path)
+	t2.mu.Lock()
+	_, ok := t2.entries[fp]
+	t2.mu.Unlock()
+	if !ok {
+		t.Fatal("entry not reloaded after atomic flush")
+	}
+}
+
+// TestBuildClaudeProfileReturnsNilWithoutCacheControl is the regression guard for
+// the has_cache_control fast path: a request with no cache_control marker yields
+// a nil profile — identical to the full flatten/hash pass, but without the
+// O(prompt) work. A request carrying cache_control still builds a profile.
+func TestBuildClaudeProfileReturnsNilWithoutCacheControl(t *testing.T) {
+	tr := newPromptCacheTracker(time.Hour)
+
+	// No cache_control anywhere: plain string system + string message content.
+	plain := &ClaudeRequest{
+		Model:    "claude-sonnet-4.5",
+		System:   strings.Repeat("system prompt without cache marker ", 200),
+		Messages: []ClaudeMessage{{Role: "user", Content: strings.Repeat("plain user text ", 200)}},
+	}
+	if claudeRequestHasCacheControl(plain) {
+		t.Fatal("claudeRequestHasCacheControl should be false for a request with no cache_control")
+	}
+	if prof := tr.BuildClaudeProfile(plain, 5000); prof != nil {
+		t.Fatalf("expected nil profile when no cache_control present, got %+v", prof)
+	}
+
+	// cache_control on the system block: profile is built (above min-token threshold).
+	withCache := &ClaudeRequest{
+		Model: "claude-sonnet-4.5",
+		System: []interface{}{
+			map[string]interface{}{
+				"type":          "text",
+				"text":          strings.Repeat("cached system prompt ", 200),
+				"cache_control": map[string]interface{}{"type": "ephemeral"},
+			},
+		},
+		Messages: []ClaudeMessage{{Role: "user", Content: "follow up"}},
+	}
+	if !claudeRequestHasCacheControl(withCache) {
+		t.Fatal("claudeRequestHasCacheControl should be true when cache_control is present")
+	}
+	if prof := tr.BuildClaudeProfile(withCache, 2048); prof == nil {
+		t.Fatal("expected a profile when cache_control is present above threshold")
 	}
 }
