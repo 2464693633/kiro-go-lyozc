@@ -4,6 +4,7 @@ package pool
 
 import (
 	"kiro-go/config"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,41 @@ import (
 )
 
 const tokenRefreshSkewSeconds int64 = 120
+
+// Error-cooldown tuning. When an account hits errorCooldownThreshold consecutive
+// errors it is cooled down with exponential backoff (base, 2×base, 4×base …) capped
+// at errorCooldownMax, plus ±errorCooldownJitterFraction jitter so co-failing
+// accounts recover at staggered times instead of stampeding upstream together.
+const (
+	errorCooldownBase           = 1 * time.Minute
+	errorCooldownMax            = 8 * time.Minute
+	errorCooldownThreshold      = 3
+	errorCooldownJitterFraction = 0.1
+)
+
+// errorCooldownDuration returns the cooldown for a given consecutive-error count:
+// exponential from errorCooldownBase (starting at the threshold) up to
+// errorCooldownMax, with ±10% jitter to desynchronize simultaneous recoveries.
+func errorCooldownDuration(consecutiveErrors int) time.Duration {
+	steps := consecutiveErrors - errorCooldownThreshold
+	if steps < 0 {
+		steps = 0
+	}
+	// Bound the shift to prevent overflow and to match the cap semantics.
+	if steps > 16 {
+		steps = 16
+	}
+	backoff := errorCooldownBase << uint(steps)
+	if backoff > errorCooldownMax || backoff <= 0 {
+		backoff = errorCooldownMax
+	}
+	jitter := time.Duration(float64(backoff) * errorCooldownJitterFraction * (2*rand.Float64() - 1))
+	d := backoff + jitter
+	if d <= 0 {
+		d = backoff
+	}
+	return d
+}
 
 // AccountPool 账号池
 type AccountPool struct {
@@ -291,9 +327,11 @@ func (p *AccountPool) RecordError(id string, isQuotaError bool) {
 	if isQuotaError {
 		// 配额错误，冷却 1 小时
 		p.cooldowns[id] = time.Now().Add(time.Hour)
-	} else if p.errorCounts[id] >= 3 {
-		// 连续 3 次错误，冷却 1 分钟
-		p.cooldowns[id] = time.Now().Add(time.Minute)
+	} else if p.errorCounts[id] >= errorCooldownThreshold {
+		// 连续错误达阈值：指数退避（1m→2m→4m→…封顶 8m）+ ±10% 抖动。
+		// 越错越久给上游喘息；抖动错开各账号解禁时刻，避免被罚账号一窝蜂同时
+		// 涌回再一起撞墙（thundering herd）。
+		p.cooldowns[id] = time.Now().Add(errorCooldownDuration(p.errorCounts[id]))
 	}
 }
 
