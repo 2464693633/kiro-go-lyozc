@@ -14,6 +14,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"kiro-go/config"
 	"kiro-go/logger"
@@ -22,7 +24,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -64,18 +68,83 @@ func main() {
 	logger.Infof("Claude API: http://%s/v1/messages", addr)
 	logger.Infof("OpenAI API: http://%s/v1/chat/completions", addr)
 
+	// WrapHardening adds the outer zero-dep hardening chain (panic recovery,
+	// request-id, security headers, 64 MiB body cap) around the existing handler
+	// without altering its routing.
+	rootHandler := proxy.WrapHardening(handler)
+
 	// WriteTimeout intentionally 0: SSE streams can run for minutes while the
 	// upstream model produces tokens. ReadHeaderTimeout + ReadTimeout still
 	// guard against slowloris-style header/body stalls.
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           rootHandler,
 		ReadHeaderTimeout: 30 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
-	if err := srv.ListenAndServe(); err != nil {
+	// Graceful shutdown: SIGINT/SIGTERM drains in-flight requests (including
+	// long SSE streams) for up to shutdownTimeout before forcing exit. Without
+	// this a rolling deploy / Ctrl+C killed the process mid-stream, dropping
+	// every in-flight request and leaving clients hanging on a half-open stream.
+	//
+	// The serve/shutdown loop is factored into runServerWithDrain so the
+	// signal->drain->shutdown path is unit-testable (Windows taskkill cannot
+	// deliver SIGINT to a detached console process, so the only reliable way to
+	// exercise this path here is via a test harness).
+	const shutdownTimeout = 55 * time.Second
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	if err := runServerWithDrain(srv.ListenAndServe, srv.Shutdown, nil, signals, shutdownTimeout); err != nil {
 		logger.Fatalf("Server failed: %v", err)
 	}
+}
+
+// runServerWithDrain runs serve() until either a signal arrives or serve errors.
+// On signal it calls drain (if non-nil), then shutdown(ctx) bounded by timeout,
+// and finally waits for serve to return (or the timeout to elapse) before
+// returning. A nil drain is a no-op — this repo has no cluster worker to drain.
+func runServerWithDrain(serve func() error, shutdown func(context.Context) error, drain func(), signals <-chan os.Signal, timeout time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() { errCh <- serve() }()
+
+	select {
+	case sig := <-signals:
+		logger.Infof("Received %s, shutting down (draining in-flight requests for up to %s)", sig, timeout)
+		if drain != nil {
+			drain()
+		}
+		if timeout <= 0 {
+			timeout = 55 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		if err := shutdown(ctx); err != nil {
+			cancel()
+			return err
+		}
+		// shutdown returned (all in-flight drained) — wait for ListenAndServe
+		// to actually unblock, or give up when the deadline passes.
+		select {
+		case err := <-errCh:
+			cancel()
+			return normalizeServerShutdownError(err)
+		case <-ctx.Done():
+			cancel()
+			return ctx.Err()
+		}
+	case err := <-errCh:
+		return normalizeServerShutdownError(err)
+	}
+}
+
+// normalizeServerShutdownError treats http.ErrServerClosed as success — that is
+// the error ListenAndServe returns after a graceful Shutdown, not a real failure.
+func normalizeServerShutdownError(err error) error {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }

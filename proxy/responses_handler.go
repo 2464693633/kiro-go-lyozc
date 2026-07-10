@@ -137,7 +137,11 @@ func (h *Handler) handleResponsesNonStream(
 	var lastErr error
 	reqStart := time.Now()
 
-	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+	retryBudget := resolveAccountRetryBudget(h.pool.Count())
+	for attempt := 0; attempt < retryBudget; attempt++ {
+		if attempt > 0 {
+			time.Sleep(accountRetryBackoff(attempt - 1))
+		}
 		account := h.pool.GetNextForModelExcluding(model, excluded)
 		if account == nil {
 			break
@@ -323,7 +327,11 @@ func (h *Handler) handleResponsesStream(
 	responseStarted := false
 	reqStart := time.Now()
 
-	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+	retryBudget := resolveAccountRetryBudget(h.pool.Count())
+	for attempt := 0; attempt < retryBudget; attempt++ {
+		if attempt > 0 {
+			time.Sleep(accountRetryBackoff(attempt - 1))
+		}
 		account := h.pool.GetNextForModelExcluding(model, excluded)
 		if account == nil {
 			break

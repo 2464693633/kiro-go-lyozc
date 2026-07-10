@@ -359,12 +359,27 @@ func newUUID() string {
 
 // Save persists the current configuration to the JSON file.
 // Uses indented formatting for human readability.
+//
+// Atomic write: marshalled JSON is written to a sibling temp file, then renamed
+// over config.json. A crash mid-write can no longer truncate/corrupt the file —
+// which would lose every account token, API key, and the admin password, since
+// this is the single source of truth for all credentials. rename is atomic on
+// the same filesystem (same dir), so readers see either the old or the new file
+// in full, never a partial write.
 func Save() error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cfgPath, data, 0600)
+	tmp := cfgPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, cfgPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // SetPassword updates the admin password.

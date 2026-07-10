@@ -880,7 +880,11 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		messageStarted = true
 	}
 
-	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+	retryBudget := resolveAccountRetryBudget(h.pool.Count())
+	for attempt := 0; attempt < retryBudget; attempt++ {
+		if attempt > 0 {
+			time.Sleep(accountRetryBackoff(attempt - 1))
+		}
 		account := h.pool.GetNextForModelExcluding(model, excluded)
 		if account == nil {
 			break
@@ -1450,7 +1454,11 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 	var lastErr error
 	reqStart := time.Now()
 
-	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+	retryBudget := resolveAccountRetryBudget(h.pool.Count())
+	for attempt := 0; attempt < retryBudget; attempt++ {
+		if attempt > 0 {
+			time.Sleep(accountRetryBackoff(attempt - 1))
+		}
 		account := h.pool.GetNextForModelExcluding(model, excluded)
 		if account == nil {
 			break
@@ -1647,7 +1655,11 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 	var lastErr error
 	reqStart := time.Now()
 
-	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+	retryBudget := resolveAccountRetryBudget(h.pool.Count())
+	for attempt := 0; attempt < retryBudget; attempt++ {
+		if attempt > 0 {
+			time.Sleep(accountRetryBackoff(attempt - 1))
+		}
 		account := h.pool.GetNextForModelExcluding(model, excluded)
 		if account == nil {
 			break
@@ -2028,7 +2040,11 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 	var lastErr error
 	reqStart := time.Now()
 
-	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+	retryBudget := resolveAccountRetryBudget(h.pool.Count())
+	for attempt := 0; attempt < retryBudget; attempt++ {
+		if attempt > 0 {
+			time.Sleep(accountRetryBackoff(attempt - 1))
+		}
 		account := h.pool.GetNextForModelExcluding(model, excluded)
 		if account == nil {
 			break
