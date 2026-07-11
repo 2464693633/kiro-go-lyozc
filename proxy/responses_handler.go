@@ -180,6 +180,9 @@ func (h *Handler) handleResponsesNonStream(
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
+			if isUpstreamPermanentError(err) {
+				break
+			}
 			continue
 		}
 
@@ -486,10 +489,13 @@ func (h *Handler) handleResponsesStream(
 
 		err := CallKiroAPI(account, payload, callback)
 		if err != nil {
+			lastErr = err
+			excluded[account.ID] = true
+			h.handleAccountFailure(account, err)
+			if isUpstreamPermanentError(err) {
+				break
+			}
 			if !responseStarted {
-				lastErr = err
-				excluded[account.ID] = true
-				h.handleAccountFailure(account, err)
 				continue
 			}
 			send("response.failed", map[string]interface{}{

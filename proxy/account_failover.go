@@ -140,6 +140,13 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 
 	errMsg := err.Error()
 	switch {
+	case isUpstreamPermanentError(err):
+		// The request itself is malformed/rejected by the upstream regardless of
+		// which account relays it. Penalising the account's health, cooling it
+		// down, or rotating to another account would be wrong (the account is
+		// healthy) and harmful (scatters cache affinity, wastes upstream hits).
+		// Neutral: return without recording any success or failure.
+		return
 	case isOverageErrorMessage(errMsg):
 		h.disableAccountOverage(account)
 		h.pool.RecordError(account.ID, false)

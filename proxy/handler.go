@@ -1218,6 +1218,12 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
+			if isUpstreamPermanentError(err) {
+				// Malformed request — no other account can succeed. Stop retrying;
+				// lastErr flows to the client. The relaying account was left neutral
+				// by handleAccountFailure (not penalised).
+				break
+			}
 			if !messageStarted {
 				continue
 			}
@@ -1506,6 +1512,9 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
+			if isUpstreamPermanentError(err) {
+				break
+			}
 			continue
 		}
 
@@ -1957,6 +1966,9 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
+			if isUpstreamPermanentError(err) {
+				break
+			}
 			if !responseStarted {
 				continue
 			}
@@ -2084,6 +2096,9 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
+			if isUpstreamPermanentError(err) {
+				break
+			}
 			continue
 		}
 
