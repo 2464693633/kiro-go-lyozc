@@ -224,7 +224,7 @@ func (h *Handler) handleResponsesNonStream(
 		return
 	}
 	h.recordFailureWithDetails("responses", model, "", lastErr)
-	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+	h.sendOpenAIError(w, 500, "server_error", improperlyFormedClientMessage(lastErr))
 }
 
 func buildResponsesObject(
@@ -505,7 +505,7 @@ func (h *Handler) handleResponsesStream(
 					"status": "failed",
 					"error": map[string]string{
 						"type":    "server_error",
-						"message": err.Error(),
+						"message": improperlyFormedClientMessage(err),
 					},
 				},
 			})
@@ -601,7 +601,7 @@ func (h *Handler) handleResponsesStream(
 			"status": "failed",
 			"error": map[string]string{
 				"type":    "server_error",
-				"message": lastErr.Error(),
+				"message": improperlyFormedClientMessage(lastErr),
 			},
 		},
 	})

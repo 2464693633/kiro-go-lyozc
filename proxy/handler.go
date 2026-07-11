@@ -1295,7 +1295,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 			h.recordFailureWithDetails("claude", model, account.ID, err)
 			emit("error", map[string]interface{}{
 				"type":  "error",
-				"error": map[string]string{"type": "api_error", "message": err.Error()},
+				"error": map[string]string{"type": "api_error", "message": improperlyFormedClientMessage(err)},
 			})
 			return
 		}
@@ -1374,7 +1374,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		// superfluous WriteHeader 告警且破坏流式协议）。
 		msg := "No available accounts"
 		if lastErr != nil {
-			msg = lastErr.Error()
+			msg = improperlyFormedClientMessage(lastErr)
 		}
 		ensureMessageStart()
 		emit("error", map[string]interface{}{
@@ -1397,7 +1397,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		return
 	}
 
-	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
+	h.sendClaudeError(w, 500, "api_error", improperlyFormedClientMessage(lastErr))
 }
 
 func (h *Handler) sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data interface{}) {
@@ -1693,7 +1693,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 	}
 
 	h.recordFailureWithDetails("claude", model, "", lastErr)
-	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
+	h.sendClaudeError(w, 500, "api_error", improperlyFormedClientMessage(lastErr))
 }
 
 func (h *Handler) sendClaudeError(w http.ResponseWriter, status int, errType, message string) {
@@ -2206,7 +2206,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		// 会触发 superfluous WriteHeader 且破坏流式协议）。
 		msg := "No available accounts"
 		if lastErr != nil {
-			msg = lastErr.Error()
+			msg = improperlyFormedClientMessage(lastErr)
 		}
 		errChunk := map[string]interface{}{
 			"id":      chatID,
@@ -2231,7 +2231,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		return
 	}
 
-	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+	h.sendOpenAIError(w, 500, "server_error", improperlyFormedClientMessage(lastErr))
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
@@ -2326,7 +2326,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 	}
 
 	h.recordFailureWithDetails("openai", model, "", lastErr)
-	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+	h.sendOpenAIError(w, 500, "server_error", improperlyFormedClientMessage(lastErr))
 }
 
 func (h *Handler) sendOpenAIError(w http.ResponseWriter, status int, errType, message string) {

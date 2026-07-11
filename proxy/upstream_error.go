@@ -59,3 +59,24 @@ func isUpstreamPermanentError(err error) bool {
 	_, ok := asUpstreamPermanentError(err)
 	return ok
 }
+
+// improperlyFormedClientMessage translates the upstream's opaque "Improperly
+// formed request" rejection into a readable client hint. In practice the vast
+// majority of these rejections occur when the request structure is perfectly
+// valid but the tool definitions are too numerous or the payload too large
+// (upstream limits on large requests); the raw wording makes users think the
+// gateway is buggy. Other errors pass through unchanged.
+//
+// Complements tool_compression.go (compressToolsIfNeeded): compression prevents
+// the rejection when it can; when it cannot, this surfaces a actionable message
+// instead of the raw upstream text. Ported from kiro-tutu (zero-dep).
+func improperlyFormedClientMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if isImproperlyFormedRejection(msg) {
+		return "upstream rejected the request (commonly caused by too many tool definitions or an oversized payload); try reducing the number of tools or shortening the context"
+	}
+	return msg
+}
