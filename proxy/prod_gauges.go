@@ -28,6 +28,17 @@ func collectPoolGauges() (out []gaugeSample) {
 		gaugeSample{name: "kiro_accounts_available", value: float64(p.AvailableCount())},
 	)
 
+	// In-flight per account, exposed now that the pool tracks dispatch-level
+	// in-flight load (health-scoring slice). A non-zero value means the smart
+	// scheduler is actively routing that account.
+	for id, s := range p.GetRuntimeStatsSnapshot() {
+		out = append(out, gaugeSample{
+			name:   "kiro_account_inflight",
+			labels: [][2]string{{"account", id}},
+			value:  float64(s.InFlight),
+		})
+	}
+
 	for _, acc := range p.GetAllAccounts() {
 		if acc.UsageLimit > 0 {
 			out = append(out, gaugeSample{

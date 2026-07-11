@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -57,6 +56,7 @@ type AccountPool struct {
 	cooldowns     map[string]time.Time       // 账号冷却时间
 	errorCounts   map[string]int             // 连续错误计数
 	modelLists    map[string]map[string]bool // accountID → set of modelIDs (from ListAvailableModels)
+	runtimeStats  map[string]*accountRuntimeStats // accountID → dispatch health/load signals (health-scoring)
 }
 
 var (
@@ -68,9 +68,10 @@ var (
 func GetPool() *AccountPool {
 	poolOnce.Do(func() {
 		pool = &AccountPool{
-			cooldowns:   make(map[string]time.Time),
-			errorCounts: make(map[string]int),
-			modelLists:  make(map[string]map[string]bool),
+			cooldowns:    make(map[string]time.Time),
+			errorCounts:  make(map[string]int),
+			modelLists:   make(map[string]map[string]bool),
+			runtimeStats: make(map[string]*accountRuntimeStats),
 		}
 		pool.Reload()
 	})
@@ -107,77 +108,16 @@ func (p *AccountPool) GetNext() *config.Account {
 }
 
 // GetNextExcluding 获取下一个可用账号（加权轮询），并跳过指定账号。
+//
+// Selection is delegated to selectAccountLocked (pool/dispatch.go), which among
+// the accounts passing the hard filters (not cooling down, token valid, quota
+// available) picks the healthiest/least-loaded one via the smart scheduler and
+// stamps it as in-flight. The least-cooldown fallback is preserved inside
+// selectAccountLocked so availability behaviour is unchanged.
 func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if len(p.accounts) == 0 {
-		return nil
-	}
-
-	allowOverUsage := config.GetAllowOverUsage()
-	now := time.Now()
-	n := len(p.accounts)
-	seen := make(map[string]bool)
-
-	// 加权轮询查找可用账号
-	for i := 0; i < n; i++ {
-		idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
-		acc := &p.accounts[idx]
-
-		if excluded != nil && excluded[acc.ID] {
-			seen[acc.ID] = true
-			continue
-		}
-		if seen[acc.ID] {
-			continue
-		}
-
-		// 跳过冷却中的账号
-		if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
-			seen[acc.ID] = true
-			continue
-		}
-
-		// 跳过即将过期的 Token
-		if acc.ExpiresAt > 0 && time.Now().Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
-			seen[acc.ID] = true
-			continue
-		}
-
-		// Skip accounts whose quota is exhausted, unless overrides apply.
-		if isQuotaBlocked(*acc, allowOverUsage) {
-			seen[acc.ID] = true
-			continue
-		}
-
-		return copyAccount(acc)
-	}
-
-		// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
-	var best *config.Account
-	var earliest time.Time
-	for i := range p.accounts {
-		acc := &p.accounts[i]
-		if excluded != nil && excluded[acc.ID] {
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
-			continue
-		}
-		if cooldown, ok := p.cooldowns[acc.ID]; ok {
-			if best == nil || cooldown.Before(earliest) {
-				best = acc
-				earliest = cooldown
-			}
-		} else {
-			return copyAccount(acc)
-		}
-	}
-	if best != nil {
-		return copyAccount(best)
-	}
-	return nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.selectAccountLocked("", excluded, false)
 }
 
 // SetModelList 缓存账号支持的模型集合（由 handler 在刷新后调用）
@@ -225,76 +165,11 @@ func (p *AccountPool) GetNextForModel(model string) *config.Account {
 }
 
 // GetNextForModelExcluding 获取下一个支持指定模型的可用账号，并跳过指定账号。
+// Delegates to selectAccountLocked (requireModel=true). See GetNextExcluding.
 func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string]bool) *config.Account {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if len(p.accounts) == 0 {
-		return nil
-	}
-
-	allowOverUsage := config.GetAllowOverUsage()
-	now := time.Now()
-	n := len(p.accounts)
-	seen := make(map[string]bool)
-
-	for i := 0; i < n; i++ {
-		idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
-		acc := &p.accounts[idx]
-
-		if excluded != nil && excluded[acc.ID] {
-			seen[acc.ID] = true
-			continue
-		}
-		if seen[acc.ID] {
-			continue
-		}
-		if !p.accountHasModel(acc.ID, model) {
-			seen[acc.ID] = true
-			continue
-		}
-		if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
-			seen[acc.ID] = true
-			continue
-		}
-		if acc.ExpiresAt > 0 && time.Now().Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
-			seen[acc.ID] = true
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
-			seen[acc.ID] = true
-			continue
-		}
-		return copyAccount(acc)
-	}
-
-	// fallback：找冷却时间最短且支持该模型的账号
-	var best *config.Account
-	var earliest time.Time
-	for i := range p.accounts {
-		acc := &p.accounts[i]
-		if excluded != nil && excluded[acc.ID] {
-			continue
-		}
-		if !p.accountHasModel(acc.ID, model) {
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
-			continue
-		}
-		if cooldown, ok := p.cooldowns[acc.ID]; ok {
-			if best == nil || cooldown.Before(earliest) {
-				best = acc
-				earliest = cooldown
-			}
-		} else {
-			return copyAccount(acc)
-		}
-	}
-	if best != nil {
-		return copyAccount(best)
-	}
-	return nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.selectAccountLocked(model, excluded, true)
 }
 
 // GetByID 根据 ID 获取账号
@@ -313,6 +188,8 @@ func (p *AccountPool) GetByID(id string) *config.Account {
 func (p *AccountPool) RecordSuccess(id string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.ensurePoolMapsLocked()
+	p.finishAccountUseLocked(id, true, false, time.Now())
 	delete(p.cooldowns, id)
 	p.errorCounts[id] = 0
 }
@@ -322,6 +199,8 @@ func (p *AccountPool) RecordError(id string, isQuotaError bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	p.ensurePoolMapsLocked()
+	p.finishAccountUseLocked(id, false, isQuotaError, time.Now())
 	p.errorCounts[id]++
 
 	if isQuotaError {
@@ -408,6 +287,10 @@ func (p *AccountPool) DisableAccount(id, reason string) {
 		_ = err
 	}
 	p.mu.Lock()
+	p.ensurePoolMapsLocked()
+	// Release any in-flight slot the account held before evicting it, so the
+	// smart scheduler's in-flight counts stay accurate across disable/re-enable.
+	p.finishAccountUseLocked(id, false, false, time.Now())
 	// Long cooldown as a safety net in case Reload races
 	p.cooldowns[id] = time.Now().Add(24 * time.Hour)
 	p.mu.Unlock()
@@ -420,6 +303,8 @@ func (p *AccountPool) DisableAccount(id, reason string) {
 // the next attempt picks a different account, then reload.
 func (p *AccountPool) MarkOverLimit(id string) {
 	p.mu.Lock()
+	p.ensurePoolMapsLocked()
+	p.finishAccountUseLocked(id, false, false, time.Now())
 	p.cooldowns[id] = time.Now().Add(time.Hour)
 	p.mu.Unlock()
 	p.Reload()

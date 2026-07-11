@@ -145,7 +145,9 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 		// which account relays it. Penalising the account's health, cooling it
 		// down, or rotating to another account would be wrong (the account is
 		// healthy) and harmful (scatters cache affinity, wastes upstream hits).
-		// Neutral: return without recording any success or failure.
+		// Neutral: release the in-flight slot the selection took (RecordPermanentRejection)
+		// without recording any success or failure, then return.
+		h.pool.RecordPermanentRejection(account.ID)
 		return
 	case isOverageErrorMessage(errMsg):
 		h.disableAccountOverage(account)
