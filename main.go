@@ -55,6 +55,15 @@ func main() {
 		config.SetPassword(envPassword)
 	}
 
+	// 生产安全态势告警（不改变行为，仅提示）：默认密码 / 公网无认证裸奔。
+	// 这两个组合是真实事故的高频根因，启动时一次性提示，方便运维尽早发现。
+	if config.GetPassword() == "changeme" {
+		logger.Warnf("[SECURITY] 管理密码仍为默认 'changeme'，请通过 ADMIN_PASSWORD 环境变量或管理面板尽快修改")
+	}
+	if config.GetHost() == "0.0.0.0" && !config.IsApiKeyRequired() {
+		logger.Warnf("[SECURITY] 监听 0.0.0.0 且未强制 API Key 鉴权：服务对外无认证开放；生产环境请设置 requireApiKey=true 或限制绑定地址")
+	}
+
 	// 初始化账号池
 	pool.GetPool()
 

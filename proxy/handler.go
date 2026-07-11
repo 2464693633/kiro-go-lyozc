@@ -252,6 +252,9 @@ func NewHandler() *Handler {
 	h.promptCache.startSaveLoop(cachePath, 30*time.Second)
 	// 启动后台刷新
 	go h.backgroundRefresh()
+	// 启动 token 预热 worker（2 分钟一轮，提前 15 分钟刷新即将过期的 token，
+	// 避免请求路径上同步刷新造成的延迟尖峰）
+	go h.backgroundWarmup()
 	// 启动后台统计保存 (每30秒保存一次)
 	go h.backgroundStatsSaver()
 	// 清理过期的 stored responses（>30 天）
@@ -2184,7 +2187,7 @@ func (h *Handler) refreshAccountToken(account *config.Account, force bool) error
 		}
 	}
 
-	accessToken, refreshToken, expiresAt, profileArn, err := auth.RefreshToken(account)
+	accessToken, refreshToken, expiresAt, profileArn, err := authRefreshToken(account)
 	if err != nil {
 		return err
 	}
@@ -3226,7 +3229,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			TokenEndpoint: req.TokenEndpoint,
 			Scopes:        req.Scopes,
 		}
-		a, newRT, ea, newPA, err := auth.RefreshToken(tempAccount)
+		a, newRT, ea, newPA, err := authRefreshToken(tempAccount)
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Token refresh failed: " + err.Error()})
