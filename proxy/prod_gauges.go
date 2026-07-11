@@ -1,14 +1,13 @@
 package proxy
 
 // Pool-backed Prometheus gauges. Registered as the metrics gaugeProvider so a
-// /metrics scrape reflects live pool state (account counts and remaining
-// credential quota). Collection is guarded so a scrape can never panic the
-// metrics endpoint.
+// /metrics scrape reflects live pool state: account counts, per-account
+// in-flight dispatch load, and remaining credential quota. Collection is
+// guarded so a scrape can never panic the metrics endpoint.
 //
-// Ported from kiro-tutu. The tutu version also emits kiro_account_inflight from
-// pool.GetRuntimeStatsSnapshot; this repo has no in-flight tracking (the
-// health-scoring+inFlight slice was not ported), so that gauge is omitted — the
-// gaugeHelp map in prod_metrics.go correspondingly has no entry for it.
+// Ported from kiro-tutu. kiro_account_inflight is emitted from
+// pool.GetRuntimeStatsSnapshot, populated by the health-scoring + inFlight
+// dispatch slice.
 import "kiro-go/pool"
 
 func init() {

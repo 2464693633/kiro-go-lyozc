@@ -5,9 +5,9 @@ package proxy
 // Rather than pull in a metrics client library, this exposes a tiny, correct
 // subset of the Prometheus text format (v0.0.4). Collection is lock-guarded and
 // off the request hot path only by a single map insert + a few atomics, so it
-// never blocks the proxied stream. Ported from kiro-tutu; no audit counter is
-// emitted here (this repo has no audit store — kiro_audit_dropped_total is
-// intentionally omitted).
+// never blocks the proxied stream. Ported from kiro-tutu. The audit counter
+// kiro_audit_dropped_total is incremented by the async audit store
+// (persist.go) when its buffer overflows.
 import (
 	"fmt"
 	"sort"
@@ -60,6 +60,7 @@ var gaugeProvider func() []gaugeSample
 var gaugeHelp = map[string]string{
 	"kiro_accounts_total":             "Total configured accounts in the pool.",
 	"kiro_accounts_available":         "Accounts currently routable (not cooling down).",
+	"kiro_account_inflight":           "In-flight dispatches currently assigned to the account.",
 	"kiro_credential_quota_remaining": "Remaining usage quota per account (UsageLimit-UsageCurrent).",
 }
 

@@ -13,9 +13,10 @@ package proxy
 // statusRecorder implements http.Flusher and Unwrap. Rate limiting and metrics
 // are opt-in / always-on respectively and add no dependency.
 //
-// Deliberately NOT included (they need deps / infrastructure absent from this
-// repo): SQLite/JSONL audit store, cluster drain. kiro_audit_dropped_total is
-// correspondingly omitted from the metrics.
+// The async JSONL audit store (persist.go) is wired from main and fed by
+// instrumentMiddleware; kiro_audit_dropped_total reflects its buffer overflow.
+// Deliberately NOT included (needs deps/infrastructure absent from this repo):
+// cluster drain.
 import (
 	"context"
 	"crypto/subtle"
