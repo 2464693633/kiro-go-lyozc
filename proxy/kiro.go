@@ -224,9 +224,9 @@ type KiroToolUse struct {
 }
 
 type InferenceConfig struct {
-	MaxTokens   int     `json:"maxTokens,omitempty"`
-	Temperature float64 `json:"temperature,omitempty"`
-	TopP        float64 `json:"topP,omitempty"`
+	MaxTokens   int      `json:"maxTokens,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        float64  `json:"topP,omitempty"`
 }
 
 // ==================== Stream Callbacks ====================

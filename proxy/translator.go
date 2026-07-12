@@ -123,7 +123,7 @@ type ClaudeRequest struct {
 	Model       string                `json:"model"`
 	Messages    []ClaudeMessage       `json:"messages"`
 	MaxTokens   int                   `json:"max_tokens"`
-	Temperature float64               `json:"temperature,omitempty"`
+	Temperature *float64              `json:"temperature,omitempty"`
 	TopP        float64               `json:"top_p,omitempty"`
 	Stream      bool                  `json:"stream,omitempty"`
 	System      interface{}           `json:"system,omitempty"` // string or []SystemBlock
@@ -341,7 +341,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 		payload.ConversationState.History = history
 	}
 
-	if req.MaxTokens > 0 || req.Temperature > 0 || req.TopP > 0 {
+	if req.MaxTokens > 0 || req.Temperature != nil || req.TopP > 0 {
 		payload.InferenceConfig = &InferenceConfig{
 			MaxTokens:   req.MaxTokens,
 			Temperature: req.Temperature,
@@ -991,7 +991,7 @@ type OpenAIRequest struct {
 	Model       string          `json:"model"`
 	Messages    []OpenAIMessage `json:"messages"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
 	TopP        float64         `json:"top_p,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
@@ -1289,7 +1289,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		payload.ConversationState.History = history
 	}
 
-	if req.MaxTokens > 0 || req.Temperature > 0 || req.TopP > 0 {
+	if req.MaxTokens > 0 || req.Temperature != nil || req.TopP > 0 {
 		payload.InferenceConfig = &InferenceConfig{
 			MaxTokens:   req.MaxTokens,
 			Temperature: req.Temperature,
