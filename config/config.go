@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -141,7 +142,10 @@ type Account struct {
 	RefreshToken string `json:"refreshToken"`           // OAuth refresh token for token renewal
 	ClientID     string `json:"clientId,omitempty"`     // OIDC client ID (for IdC auth)
 	ClientSecret string `json:"clientSecret,omitempty"` // OIDC client secret (for IdC auth)
-	AuthMethod   string `json:"authMethod"`             // Authentication method: "idc" (AWS IdC), "social" (GitHub/Google), or "external_idp" (enterprise SSO, e.g. Azure AD)
+	AuthMethod   string `json:"authMethod"`             // Authentication method: "idc" (AWS IdC), "social" (GitHub/Google), "external_idp" (enterprise SSO, e.g. Azure AD), or "api_key" (Kiro API key used directly as bearer)
+	KiroApiKey   string `json:"kiroApiKey,omitempty"`   // API key credential, used directly as the bearer token when AuthMethod == "api_key"
+	AuthRegion   string `json:"authRegion,omitempty"`   // Region for token-refresh endpoints; falls back to Region
+	ApiRegion    string `json:"apiRegion,omitempty"`    // Region for API request hosts; falls back to Region
 	Provider     string `json:"provider,omitempty"`     // Identity provider name (e.g., "BuilderId", "GitHub", "AzureAD")
 	Region       string `json:"region"`                 // AWS region for OIDC endpoints
 	StartUrl     string `json:"startUrl,omitempty"`     // AWS SSO start URL
@@ -213,6 +217,62 @@ type Account struct {
 	TotalCredits float64 `json:"totalCredits,omitempty"` // Cumulative credits consumed
 }
 
+// IsApiKeyCredential reports whether the account authenticates with a Kiro API
+// key used directly as the bearer token (tokentype: API_KEY), bypassing OAuth
+// refresh and profile-ARN resolution. True when KiroApiKey is set OR the
+// authMethod is "api_key"/"apikey" (case-insensitive).
+func (a *Account) IsApiKeyCredential() bool {
+	if a == nil {
+		return false
+	}
+	if a.KiroApiKey != "" {
+		return true
+	}
+	m := strings.ToLower(a.AuthMethod)
+	return m == "api_key" || m == "apikey"
+}
+
+// EffectiveAuthRegion returns the region used for token-refresh endpoints, with
+// the fallback chain: account.AuthRegion > account.Region > global AuthRegion
+// (if set and not us-east-1) > global Region (if set and not us-east-1) > us-east-1.
+func (a *Account) EffectiveAuthRegion() string {
+	if a != nil {
+		if r := strings.TrimSpace(a.AuthRegion); r != "" {
+			return r
+		}
+		if r := strings.TrimSpace(a.Region); r != "" {
+			return r
+		}
+	}
+	if r := GetGlobalAuthRegion(); r != "" && r != "us-east-1" {
+		return r
+	}
+	if r := GetGlobalRegion(); r != "" && r != "us-east-1" {
+		return r
+	}
+	return "us-east-1"
+}
+
+// EffectiveApiRegion returns the region used for API request hosts, with the
+// same fallback chain as EffectiveAuthRegion but using ApiRegion.
+func (a *Account) EffectiveApiRegion() string {
+	if a != nil {
+		if r := strings.TrimSpace(a.ApiRegion); r != "" {
+			return r
+		}
+		if r := strings.TrimSpace(a.Region); r != "" {
+			return r
+		}
+	}
+	if r := GetGlobalApiRegion(); r != "" && r != "us-east-1" {
+		return r
+	}
+	if r := GetGlobalRegion(); r != "" && r != "us-east-1" {
+		return r
+	}
+	return "us-east-1"
+}
+
 // PromptFilterRule defines a single custom prompt sanitization rule.
 // Type can be: "regex" (regexp find/replace within prompt) or
 // "lines-containing" (remove lines containing the match substring).
@@ -277,6 +337,15 @@ type Config struct {
 	// usage quota has been exhausted. When enabled, the pool will not skip accounts
 	// solely because usageCurrent >= usageLimit.
 	AllowOverUsage bool `json:"allowOverUsage,omitempty"`
+
+	// Region defaults for accounts that omit per-account region/authRegion/apiRegion.
+	// Defaults to "us-east-1" when empty (see GetGlobalRegion* / Account.Effective*Region).
+	Region        string `json:"region,omitempty"`
+	AuthRegion    string `json:"authRegion,omitempty"`
+	ApiRegion     string `json:"apiRegion,omitempty"`
+	// MaxPayloadBytes caps the serialized Kiro request body before upstream rejects
+	// it as oversized. <=0 means use DefaultMaxPayloadBytes.
+	MaxPayloadBytes int `json:"maxPayloadBytes,omitempty"`
 
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
@@ -346,6 +415,10 @@ type AccountInfo struct {
 	TrialStatus       string
 	TrialExpiresAt    int64
 }
+
+// DefaultMaxPayloadBytes is the runtime-configurable cap (2 MB) for the Kiro
+// request body, below the observed ~2.15 MB AWS upstream rejection threshold.
+const DefaultMaxPayloadBytes = 2_000_000
 
 // Version current version
 const Version = "1.1.2"
@@ -1169,6 +1242,55 @@ func UpdateAllowOverUsage(allow bool) error {
 	defer cfgLock.Unlock()
 	cfg.AllowOverUsage = allow
 	return Save()
+}
+
+// GetMaxPayloadBytes returns the configured payload cap, falling back to
+// DefaultMaxPayloadBytes when unset (<=0).
+func GetMaxPayloadBytes() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.MaxPayloadBytes <= 0 {
+		return DefaultMaxPayloadBytes
+	}
+	return cfg.MaxPayloadBytes
+}
+
+// UpdateMaxPayloadBytes sets the payload cap and persists the change.
+func UpdateMaxPayloadBytes(n int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.MaxPayloadBytes = n
+	return Save()
+}
+
+// GetGlobalRegion returns the configured default region (empty → "us-east-1").
+func GetGlobalRegion() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.Region == "" {
+		return "us-east-1"
+	}
+	return cfg.Region
+}
+
+// GetGlobalAuthRegion returns the configured default token-refresh region.
+func GetGlobalAuthRegion() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.AuthRegion == "" {
+		return "us-east-1"
+	}
+	return cfg.AuthRegion
+}
+
+// GetGlobalApiRegion returns the configured default API-request host region.
+func GetGlobalApiRegion() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.ApiRegion == "" {
+		return "us-east-1"
+	}
+	return cfg.ApiRegion
 }
 
 // GetLogLevel returns the configured log level (debug/info/warn/error). Defaults to "info".
