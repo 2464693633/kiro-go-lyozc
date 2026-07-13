@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"kiro-go/auth"
 	"kiro-go/config"
 	accountpool "kiro-go/pool"
@@ -515,5 +516,84 @@ func TestApiImportCredentialsExternalIdpDerivesFromAccessTokenJWT(t *testing.T) 
 	}
 	if got.RefreshToken != "rt" {
 		t.Fatalf("RefreshToken: want the pasted token (not rotated), got %q", got.RefreshToken)
+	}
+}
+
+// TestApiImportCredentialsApiKeyBranch verifies POST /auth/credentials with a
+// kiroApiKey imports an api_key account (AuthMethod normalized, ExpiresAt=0,
+// AccessToken mirrored) without any OAuth refresh round-trip. The background
+// best-effort RefreshAccountInfo is exercised against a stubbed REST store.
+func TestApiImportCredentialsApiKeyBranch(t *testing.T) {
+	cfgFile := t.TempDir() + "/config.json"
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	defer installCleanAuthClient(t)()
+
+	// Stub the REST store so the background RefreshAccountInfo / model-cache
+	// fetches don't hit real network. A 200 with empty JSON decodes cleanly and
+	// never trips the auth-error ban path.
+	kiroRestHttpStore.Store(&http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	})
+	t.Cleanup(func() { InitKiroHttpClient("") })
+
+	h := &Handler{pool: accountpool.GetPool()}
+	body := `{"kiroApiKey":"my-key","authMethod":"api_key","region":"eu-central-1"}`
+	req := httptest.NewRequest("POST", "/auth/credentials", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.apiImportCredentials(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	accs := config.GetAccounts()
+	if len(accs) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(accs))
+	}
+	got := accs[0]
+	if got.AuthMethod != "api_key" {
+		t.Fatalf("AuthMethod: want api_key, got %q", got.AuthMethod)
+	}
+	if got.AccessToken != "my-key" {
+		t.Fatalf("AccessToken mirror: want my-key, got %q", got.AccessToken)
+	}
+	if got.KiroApiKey != "my-key" {
+		t.Fatalf("KiroApiKey: want my-key, got %q", got.KiroApiKey)
+	}
+	if got.ExpiresAt != 0 {
+		t.Fatalf("ExpiresAt: want 0, got %d", got.ExpiresAt)
+	}
+	if got.RefreshToken != "" {
+		t.Fatalf("RefreshToken: want empty, got %q", got.RefreshToken)
+	}
+	if got.Region != "eu-central-1" {
+		t.Fatalf("Region: want eu-central-1, got %q", got.Region)
+	}
+}
+
+// TestApiImportCredentialsApiKeyRequiresKey verifies a missing key on an
+// api_key import request is rejected with 400 and nothing is persisted.
+func TestApiImportCredentialsApiKeyRequiresKey(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	defer installCleanAuthClient(t)()
+	h := &Handler{pool: accountpool.GetPool()}
+	body := `{"authMethod":"api_key"}`
+	req := httptest.NewRequest("POST", "/auth/credentials", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.apiImportCredentials(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("expected 400 for api_key without key, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if accs := config.GetAccounts(); len(accs) != 0 {
+		t.Fatalf("expected no account persisted, got %d", len(accs))
 	}
 }

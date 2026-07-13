@@ -3325,9 +3325,14 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		TokenEndpoint string `json:"tokenEndpoint"`
 		IssuerURL     string `json:"issuerUrl"`
 		Scopes        string `json:"scopes"`
+		// api_key credential: Kiro API key used directly as bearer (no OAuth refresh).
+		KiroApiKey string `json:"kiroApiKey"`
+		AuthRegion string `json:"authRegion"`
+		ApiRegion  string `json:"apiRegion"`
 		// Optional identity preservation when pasting a full account record.
 		ID         string `json:"id"`
 		Email      string `json:"email"`
+		Nickname   string `json:"nickname"`
 		ProfileArn string `json:"profileArn"`
 		// userId (account-level in Kiro Account Manager exports) embeds the Azure
 		// tenant, from which tokenEndpoint/issuerUrl/scopes are derived when missing.
@@ -3336,6 +3341,62 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	// api_key: import a Kiro API key used directly as bearer (no OAuth refresh,
+	// no profile ARN). Mirror the key into AccessToken for pool/dispatch/metrics
+	// compatibility. Best-effort RefreshAccountInfo populates email/usage/credit.
+	if req.KiroApiKey != "" || strings.EqualFold(req.AuthMethod, "api_key") || strings.EqualFold(req.AuthMethod, "apikey") {
+		if req.KiroApiKey == "" {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "kiroApiKey is required for api_key accounts"})
+			return
+		}
+		if req.Region == "" {
+			req.Region = "us-east-1"
+		}
+		id := req.ID
+		if id == "" || config.AccountIDExists(id) {
+			id = auth.GenerateAccountID()
+		}
+		account := config.Account{
+			ID:          id,
+			Email:       req.Email,
+			Nickname:    req.Nickname,
+			AuthMethod:  "api_key",
+			KiroApiKey:  req.KiroApiKey,
+			AccessToken: req.KiroApiKey,
+			Region:      req.Region,
+			AuthRegion:  req.AuthRegion,
+			ApiRegion:   req.ApiRegion,
+			ExpiresAt:   0,
+			Enabled:     true,
+			MachineId:   config.GenerateMachineId(),
+		}
+		if err := config.AddAccount(account); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		h.pool.Reload()
+		// Best-effort: populate email/usage/credit from upstream. RefreshAccountInfo
+		// uses KiroApiKey (mirrored into AccessToken) as the bearer via
+		// applyKiroBaseHeaders; profile-ARN resolution is skipped for api_key.
+		go func(acc config.Account) {
+			if _, infoErr := RefreshAccountInfo(&acc); infoErr != nil {
+				logger.Warnf("[Import] RefreshAccountInfo failed for api_key account %s: %v", acc.Email, infoErr)
+			}
+		}(account)
+		go func(acc config.Account) {
+			if err := h.fetchAndCacheAccountModels(&acc); err != nil {
+				logger.Warnf("[ModelsCache] Auto-refresh failed for api_key account %s: %v", acc.Email, err)
+			}
+		}(account)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"account": map[string]interface{}{"id": account.ID, "email": account.Email},
+		})
 		return
 	}
 
