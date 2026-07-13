@@ -1537,6 +1537,8 @@
     const d = await res.json();
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
+    const maxPayloadEl = document.getElementById('maxPayloadBytes');
+    if (maxPayloadEl) maxPayloadEl.value = String(d.maxPayloadBytes || 2000000);
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1642,7 +1644,9 @@
   }
   async function saveOverUsageConfig() {
     const allowOverUsage = $('allowOverUsage').checked;
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage }) });
+    const maxPayloadEl = document.getElementById('maxPayloadBytes');
+    const maxPayloadBytes = maxPayloadEl ? parseInt(maxPayloadEl.value || '0', 10) : 0;
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {
@@ -2025,7 +2029,9 @@
     sso: 'fa-solid fa-shield-halved',
     local: 'fa-solid fa-folder-open',
     credentials: 'fa-solid fa-code',
-    cookie: 'fa-solid fa-cookie-bite'
+    cookie: 'fa-solid fa-cookie-bite',
+    apikey: 'fa-solid fa-key',
+    apikeybatch: 'fa-solid fa-layer-group'
   };
   function methodCard(type, title, desc) {
     var icon = METHOD_ICONS[type] || 'fa-solid fa-circle-plus';
@@ -2050,6 +2056,8 @@
     else if (type === 'local') modalLocal(title, body);
     else if (type === 'credentials') modalCredentials(title, body);
     else if (type === 'cookie') modalCookie(title, body);
+    else if (type === 'apikey') modalApiKey(title, body);
+    else if (type === 'apikeybatch') modalApiKeyBatch(title, body);
     if (!modal.classList.contains('active')) openDialog('addModal');
     enhanceCustomSelects(body);
   }
@@ -2078,6 +2086,8 @@
       methodCard('local', t('modal.localTitle'), t('modal.localDesc')) +
       methodCard('credentials', t('modal.credentialsTitle'), t('modal.credentialsDesc')) +
       methodCard('cookie', t('modal.cookieTitle'), t('modal.cookieDesc')) +
+      methodCard('apikey', t('modal.apikeyTitle'), t('modal.apikeyDesc')) +
+      methodCard('apikeybatch', t('modal.apikeyBatchTitle'), t('modal.apikeyBatchDesc')) +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
   }
@@ -2233,6 +2243,35 @@
       '<button class="btn btn-primary" id="importCookieBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
       '</div>';
     $('importCookieBtn').addEventListener('click', importFromCookie);
+  }
+  function modalApiKey(title, body) {
+    title.textContent = t('modal.apikeyTitle');
+    body.innerHTML =
+      '<p class="help-block">' + escapeHtml(t('apikey.hint')) + '</p>' +
+      '<div class="form-group"><label>' + escapeHtml(t('apikey.key')) + '</label>' +
+      '<textarea id="apiKeyValue" class="font-mono" placeholder="' + escapeAttr(t('apikey.keyPlaceholder')) + '"></textarea>' +
+      '</div>' +
+      '<div class="form-group"><label>' + escapeHtml(t('detail.region')) + '</label><input type="text" id="apiKeyRegion" value="us-east-1" /></div>' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
+      '<button class="btn btn-primary" id="importApiKeyBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
+      '</div>';
+    $('importApiKeyBtn').addEventListener('click', importApiKey);
+  }
+  function modalApiKeyBatch(title, body) {
+    title.textContent = t('modal.apikeyBatchTitle');
+    body.innerHTML =
+      '<p class="help-block">' + escapeHtml(t('apikeyBatch.hint')) + '</p>' +
+      '<div class="form-group"><label>' + escapeHtml(t('apikeyBatch.keys')) + '</label>' +
+      '<textarea id="apiKeyBatchValue" class="font-mono" rows="8" placeholder="' + escapeAttr(t('apikeyBatch.keysPlaceholder')) + '"></textarea>' +
+      '<small>' + escapeHtml(t('apikeyBatch.onePerLine')) + '</small>' +
+      '</div>' +
+      '<div class="form-group"><label>' + escapeHtml(t('detail.region')) + '</label><input type="text" id="apiKeyBatchRegion" value="us-east-1" /></div>' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
+      '<button class="btn btn-primary" id="importApiKeyBatchBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
+      '</div>';
+    $('importApiKeyBatchBtn').addEventListener('click', importApiKeysBatch);
   }
   function updateLocalFields() {
     const p = $('localProvider').value;
@@ -2404,6 +2443,39 @@
       toastPrimary(t('cookie.importSuccess') + ': ' + (d.account?.email || d.account?.id));
       autoRefreshNewAccount(d.account?.id);
     } else toastError(t('common.failed') + ': ' + (d.error || ''));
+  }
+  async function importApiKey() {
+    const kiroApiKey = $('apiKeyValue').value.trim();
+    if (!kiroApiKey) return toastWarning(t('apikey.keyMissing'));
+    const region = $('apiKeyRegion').value || 'us-east-1';
+    const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify({ kiroApiKey, authMethod: 'api_key', region }) });
+    const d = await res.json();
+    if (d.success) {
+      closeModal(); loadAccounts(); loadStats();
+      toastPrimary(t('apikey.importSuccess') + ': ' + (d.account?.email || d.account?.id));
+      autoRefreshNewAccount(d.account?.id);
+    } else toastError(t('common.failed') + ': ' + (d.error || ''));
+  }
+  async function importApiKeysBatch() {
+    const keys = $('apiKeyBatchValue').value.trim();
+    if (!keys) return toastWarning(t('apikeyBatch.keysMissing'));
+    const region = $('apiKeyBatchRegion').value || 'us-east-1';
+    const res = await api('/auth/apikeys-batch', { method: 'POST', body: JSON.stringify({ keys, region }) });
+    const d = await res.json();
+    if (d.success) {
+      closeModal(); loadAccounts(); loadStats();
+      let msg = t('apikeyBatch.summary', d.imported || 0, d.total || 0, d.skipped || 0);
+      if (d.infoFailed > 0) msg += t('apikeyBatch.infoFailed', d.infoFailed);
+      toastPrimary(msg, { duration: 6000 });
+      renderApiKeyBatchResults(d.results || []);
+    } else toastError(t('common.failed') + ': ' + (d.error || ''));
+  }
+  function renderApiKeyBatchResults(results) {
+    // Per-key detail surfaces via the toast summary above; log masked failures
+    // for the operator so a full per-key panel can be built later if needed.
+    results.forEach(r => {
+      if (r.error) console.warn('[ApiKeyBatch]', r.maskedKey, r.error);
+    });
   }
   async function importSsoToken() {
     const res = await api('/auth/sso-token', {
