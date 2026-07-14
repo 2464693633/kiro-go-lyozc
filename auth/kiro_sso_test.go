@@ -161,6 +161,11 @@ func TestRefreshExternalIdpToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// The POST boundary re-validates tokenEndpoint against the allow-list, which rejects
+	// the httptest URL (http + 127.0.0.1). Install a permissive validator for the test.
+	restore := SetExternalIdpValidatorForTest(func(string) error { return nil })
+	defer SetExternalIdpValidatorForTest(restore)
+
 	access, refresh, expiresAt, profileArn, err := refreshExternalIdpToken(
 		"old-refresh", "azure-client", srv.URL, "api://x/codewhisperer:conversations offline_access", srv.Client(),
 	)
@@ -189,6 +194,10 @@ func TestRefreshExternalIdpTokenKeepsRefreshTokenWhenOmitted(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"a2","expires_in":1200}`))
 	}))
 	defer srv.Close()
+
+	// See TestRefreshExternalIdpToken: relax the allow-list for the httptest endpoint.
+	restore := SetExternalIdpValidatorForTest(func(string) error { return nil })
+	defer SetExternalIdpValidatorForTest(restore)
 
 	_, refresh, _, _, err := refreshExternalIdpToken("keep-me", "c", srv.URL, "", srv.Client())
 	if err != nil {

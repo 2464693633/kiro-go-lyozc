@@ -86,16 +86,29 @@ func TestKiroProfileRegionCandidatesNoRegion(t *testing.T) {
 	assertOrder(t, got, []string{"us-east-1", "eu-central-1"})
 }
 
-// TestKiroProfileRegionCandidatesSingleRegionAuthMethods checks that idc/social/
+// TestKiroProfileRegionCandidatesSingleRegionAuthMethods checks that social/
 // Builder ID accounts — which already carry their authoritative region — are probed
 // against that single region only, with no fallback probing.
 func TestKiroProfileRegionCandidatesSingleRegionAuthMethods(t *testing.T) {
-	for _, method := range []string{"idc", "social", "builderId", ""} {
+	for _, method := range []string{"social", "builderId", ""} {
 		got := kiroProfileRegionCandidates(&config.Account{AuthMethod: method, Region: "eu-central-1"})
 		if len(got) != 1 || got[0] != "eu-central-1" {
 			t.Fatalf("authMethod %q: candidate regions = %v, want [eu-central-1] only", method, got)
 		}
 	}
+}
+
+// TestKiroProfileRegionCandidatesIdcFallback checks that idc (IAM Identity Center /
+// enterprise SSO) accounts — whose SSO portal region (e.g. us-east-1) does not
+// guarantee the profile region — probe fallback regions just like external_idp.
+func TestKiroProfileRegionCandidatesIdcFallback(t *testing.T) {
+	// Default us-east-1 idc login: fallbacks follow.
+	got := kiroProfileRegionCandidates(&config.Account{AuthMethod: "idc", Region: "us-east-1"})
+	assertOrder(t, got, []string{"us-east-1", "eu-central-1"})
+
+	// Already eu-central-1 leads; us-east-1 fallback follows.
+	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "idc", Region: "eu-central-1"})
+	assertOrder(t, got, []string{"eu-central-1", "us-east-1"})
 }
 
 // TestKiroProfileRegionCandidatesEnvOverride checks KIRO_PROFILE_REGIONS replaces
@@ -106,8 +119,12 @@ func TestKiroProfileRegionCandidatesEnvOverride(t *testing.T) {
 	// us-east-1 (account) first; env values de-duplicated and trimmed; no built-in defaults.
 	assertOrder(t, got, []string{"us-east-1", "eu-west-1", "ap-south-1"})
 
-	// A non-external_idp account ignores the env fallbacks entirely.
+	// An idc account also uses env fallbacks (enterprise SSO can have cross-region profiles).
 	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "idc", Region: "us-east-1"})
+	assertOrder(t, got, []string{"us-east-1", "eu-west-1", "ap-south-1"})
+
+	// A social account ignores the env fallbacks entirely.
+	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "social", Region: "us-east-1"})
 	assertOrder(t, got, []string{"us-east-1"})
 }
 

@@ -83,6 +83,16 @@ func postExternalIdpToken(client *http.Client, tokenEndpoint string, form url.Va
 	if strings.TrimSpace(tokenEndpoint) == "" {
 		return "", "", 0, fmt.Errorf("external IdP token endpoint is empty")
 	}
+	// Defense-in-depth: re-validate the endpoint at the outbound-POST boundary so the
+	// refresh token is never sent to a non-allow-listed host — even if a persisted
+	// account's TokenEndpoint was set out-of-band (backup restore, an external file
+	// write, or a future caller that stores an endpoint without validating). This makes
+	// allow-list validation an invariant of the exfiltration-sensitive operation itself
+	// rather than of every caller. Uses the exported ValidateExternalIdpEndpoint so the
+	// test seam (SetExternalIdpValidatorForTest) still relaxes it for httptest servers.
+	if err := ValidateExternalIdpEndpoint(tokenEndpoint); err != nil {
+		return "", "", 0, fmt.Errorf("external IdP token endpoint rejected: %w", err)
+	}
 	req, err := http.NewRequest("POST", tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", "", 0, fmt.Errorf("failed to build external IdP token request: %w", err)

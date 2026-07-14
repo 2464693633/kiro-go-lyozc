@@ -11,6 +11,7 @@ import (
 	"kiro-go/logger"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -121,9 +122,60 @@ func buildKiroTransport(proxyURL string) *http.Transport {
 			t.ForceAttemptHTTP2 = false
 		}
 	} else {
-		t.Proxy = http.ProxyFromEnvironment
+		t.Proxy = proxyFromEnvironmentSnapshot
 	}
 	return t
+}
+
+func proxyFromEnvironmentSnapshot(req *http.Request) (*url.URL, error) {
+	if req == nil || req.URL == nil {
+		return nil, nil
+	}
+	if noProxyMatches(req.URL.Hostname(), firstEnv("NO_PROXY", "no_proxy")) {
+		return nil, nil
+	}
+
+	var raw string
+	switch strings.ToLower(req.URL.Scheme) {
+	case "https":
+		raw = firstEnv("HTTPS_PROXY", "https_proxy")
+	case "http":
+		raw = firstEnv("HTTP_PROXY", "http_proxy")
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	return url.Parse(raw)
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func noProxyMatches(host, noProxy string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	for _, entry := range strings.Split(noProxy, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		entry = strings.TrimPrefix(entry, ".")
+		if entry == "" {
+			continue
+		}
+		if entry == "*" || host == entry || strings.HasSuffix(host, "."+entry) {
+			return true
+		}
+	}
+	return false
 }
 
 // InitKiroHttpClient initializes (or reinitializes) the HTTP clients used for Kiro API requests.
@@ -224,9 +276,9 @@ type KiroToolUse struct {
 }
 
 type InferenceConfig struct {
-	MaxTokens   int     `json:"maxTokens,omitempty"`
-	Temperature float64 `json:"temperature,omitempty"`
-	TopP        float64 `json:"topP,omitempty"`
+	MaxTokens   int      `json:"maxTokens,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        float64  `json:"topP,omitempty"`
 }
 
 // ==================== Stream Callbacks ====================
@@ -340,7 +392,13 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		// Update the origin field for the selected endpoint.
 		payload.ConversationState.CurrentMessage.UserInputMessage.Origin = ep.Origin
 
-		// Target the profile's data-plane region; endpoint URLs are declared for us-east-1.
+		// Target the data-plane region via the unified regionalizeURLForProfile.
+		// kiroRegionForProfile branches on IsApiKeyCredential: api_key accounts
+		// resolve from EffectiveApiRegion (no profile ARN), OAuth accounts derive
+		// from the profile ARN. regionalizeURLForRegion collapses both us-east-1
+		// hosts (q. and codewhisperer.) onto q.<region> for non-us-east-1 — there
+		// is no regional codewhisperer host — so this also routes the CodeWhisperer
+		// endpoint correctly for regional api_key accounts.
 		epURL := regionalizeURLForProfile(ep.URL, account, payload.ProfileArn)
 
 		reqBody, _ := json.Marshal(payload)
@@ -384,6 +442,16 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		if resp.StatusCode != 200 {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			// A 400 "Improperly formed request" is inherent to the request payload —
+			// no endpoint or account can fix it. Wrap it as a permanent rejection so
+			// CallKiroAPI's caller short-circuits (no other endpoint/account tried)
+			// and the relaying account is not penalised for a bad request it merely
+			// forwarded. Detected before any event-stream bytes are read, so streaming
+			// handlers have not yet sent anything to the client.
+			if resp.StatusCode == 400 && isImproperlyFormedRejection(string(errBody)) {
+				lastErr = newUpstreamPermanentError(resp.StatusCode, string(errBody))
+				return lastErr
+			}
 			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
 			// Authentication errors and payment errors are not retried across endpoints.
 			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
@@ -404,9 +472,21 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 	return fmt.Errorf("all endpoints failed")
 }
 
+// accountEmailForLog returns the most informative stable identifier for an
+// account in log lines. OAuth accounts log their email. api_key accounts have
+// no email until their first successful refresh (RefreshAccountInfo populates
+// it from getUsageLimits), so without a fallback every refresh/ ban/ model-
+// cache line for them was blind ("for : ..."). Fall back to the masked key,
+// which is stable and safe to log.
 func accountEmailForLog(account *config.Account) string {
 	if account == nil {
 		return "<nil>"
+	}
+	if email := strings.TrimSpace(account.Email); email != "" {
+		return email
+	}
+	if account.IsApiKeyCredential() && account.KiroApiKey != "" {
+		return maskKey(account.KiroApiKey)
 	}
 	return account.Email
 }

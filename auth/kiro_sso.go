@@ -161,6 +161,10 @@ var (
 // StartKiroSsoLogin generates PKCE codes, binds the loopback listener, and
 // returns the session plus the hosted sign-in URL the operator must open.
 func StartKiroSsoLogin(region string) (*KiroSsoSession, string, error) {
+	// Free the callback port from any previous abandoned session — only one
+	// sign-in can bind 127.0.0.1:3128 at a time.
+	cancelAllKiroSsoSessions()
+
 	if region == "" {
 		region = "us-east-1"
 	}
@@ -353,6 +357,18 @@ func (s *KiroSsoSession) close() {
 	})
 }
 
+// cancelAllKiroSsoSessions tears down every in-flight session, freeing the
+// loopback callback port. Called whenever a new SSO login starts so that a
+// stale/abandoned session never blocks the next attempt.
+func cancelAllKiroSsoSessions() {
+	kiroSsoSessionsMu.Lock()
+	defer kiroSsoSessionsMu.Unlock()
+	for id, session := range kiroSsoSessions {
+		session.close()
+		delete(kiroSsoSessions, id)
+	}
+}
+
 // CancelKiroSsoLogin tears an in-flight session down immediately (operator
 // cancelled in the admin panel), freeing the loopback port without waiting for the
 // deadline. A no-op for an unknown or already-finished session.
@@ -366,6 +382,65 @@ func CancelKiroSsoLogin(sessionID string) {
 	session.close()
 	removeKiroSsoSession(sessionID)
 }
+
+// FeedCallbackURL lets an operator paste a callback URL that the browser could not
+// deliver (e.g. in a remote deployment where localhost isn't the proxy host). Parses
+// the URL, constructs a synthetic GET request, and feeds it through the session's
+// callback state machine. For enterprise SSO leg-1 (external IdP descriptor) the
+// return value is the IdP authorize URL the operator should open next; for leg-2 and
+// social logins it returns "".
+func FeedCallbackURL(sessionID, rawURL string) (string, error) {
+	kiroSsoSessionsMu.RLock()
+	session, ok := kiroSsoSessions[sessionID]
+	kiroSsoSessionsMu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("session %q not found (expired or never started)", sessionID)
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid callback URL: %w", err)
+	}
+	req := &http.Request{
+		Method: http.MethodGet,
+		URL:    u,
+		Header: http.Header{},
+	}
+	rec := &redirectCapturingWriter{}
+	session.handleCallback(rec, req)
+	return rec.redirectURL, nil
+}
+
+// redirectCapturingWriter records the Location header from a 302 redirect and
+// discards everything else. Used by FeedCallbackURL so that enterprise SSO leg-1
+// can return the IdP authorize URL to the operator without a real browser redirect.
+type redirectCapturingWriter struct {
+	hdr         http.Header
+	redirectURL string
+}
+
+func (w *redirectCapturingWriter) Header() http.Header {
+	if w.hdr == nil {
+		w.hdr = http.Header{}
+	}
+	return w.hdr
+}
+func (w *redirectCapturingWriter) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+func (w *redirectCapturingWriter) WriteHeader(statusCode int) {
+	if statusCode == http.StatusFound && w.hdr != nil {
+		w.redirectURL = w.hdr.Get("Location")
+	}
+}
+
+// discardResponseWriter is an http.ResponseWriter that silently discards everything.
+// Used by FeedCallbackURL so the callback state machine doesn't try to write redirects
+// or HTML pages to a real HTTP response.
+type discardResponseWriter struct{}
+
+func (discardResponseWriter) Header() http.Header           { return http.Header{} }
+func (discardResponseWriter) Write(b []byte) (int, error)   { return len(b), nil }
+func (discardResponseWriter) WriteHeader(statusCode int)    {}
 
 // deliver pushes the first (and only) capture onto the result channel.
 func (s *KiroSsoSession) deliver(capture kiroSsoCapture) {

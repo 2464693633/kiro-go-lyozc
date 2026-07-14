@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"kiro-go/auth"
 	"kiro-go/config"
 	"kiro-go/logger"
 	"net/http"
@@ -38,6 +37,16 @@ func kiroRegion(account *config.Account) string {
 }
 
 func kiroRegionForProfile(account *config.Account, profileArn string) string {
+	// api_key accounts have no profile ARN, so the profile-derived region is
+	// meaningless. Resolve from the EffectiveApiRegion fallback chain
+	// (ApiRegion > Region > global > us-east-1) — the same chain the chat path
+	// (CallKiroAPI) uses — so REST calls (getUsageLimits, ListAvailableModels,
+	// overage) target the same region as chat. Previously the REST path saw only
+	// account.Region, so ApiRegion and the global region were silently ignored,
+	// diverging from the chat path and triggering spurious 403s.
+	if account != nil && account.IsApiKeyCredential() {
+		return account.EffectiveApiRegion()
+	}
 	if r := regionFromProfileArn(profileArn); r != "" {
 		return r
 	}
@@ -96,13 +105,13 @@ var defaultKiroProfileRegions = []string{"us-east-1", "eu-central-1"}
 
 // kiroProfileRegionCandidates returns the ordered, de-duplicated list of regions
 // to probe for an account's Kiro profile. The account's currently-configured region
-// is always tried first. Cross-region fallbacks are only added when the home region
-// is genuinely unknown — an external_idp (Azure-tenant) login, which defaults to
-// us-east-1, or an account with no region at all. An idc/social/Builder ID account
-// already carries its real region (from the SSO portal / the us-east-1 default), so
-// it is probed against that single region exactly as before — no extra upstream calls
-// and no chance of its established region being flipped. KIRO_PROFILE_REGIONS, when
-// set, replaces the built-in fallback set (the account region is still tried first).
+// is always tried first. Cross-region fallbacks are added for auth methods whose
+// login region does not guarantee the profile region: external_idp (Azure-tenant,
+// defaults to us-east-1) and idc (IAM Identity Center / enterprise SSO, where a
+// us-east-1 portal can provision profiles in eu-central-1). social and Builder ID
+// accounts carry their authoritative region and are probed against that single
+// region only. KIRO_PROFILE_REGIONS, when set, replaces the built-in fallback set
+// (the account region is still tried first).
 func kiroProfileRegionCandidates(account *config.Account) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -133,10 +142,13 @@ func kiroProfileRegionCandidates(account *config.Account) []string {
 	return out
 }
 
-// shouldProbeFallbackRegions reports whether an account's home region is unknown
-// enough to justify probing fallback regions. Enterprise IDC and external_idp
-// accounts can store the auth / Identity Center region, while the Kiro profile
-// itself may live in another data-plane region such as eu-central-1.
+// shouldProbeFallbackRegions reports whether an account should probe fallback
+// regions when its home region returns no profile. external_idp accounts always
+// qualify (region defaulted to us-east-1 at login). idc (IAM Identity Center /
+// enterprise SSO) accounts also qualify: an enterprise SSO portal in us-east-1
+// can provision profiles in eu-central-1, so the auth region does not imply the
+// profile region. social and Builder ID accounts carry their authoritative
+// region and are not probed further.
 func shouldProbeFallbackRegions(account *config.Account) bool {
 	if account == nil {
 		return true
@@ -144,8 +156,8 @@ func shouldProbeFallbackRegions(account *config.Account) bool {
 	if strings.TrimSpace(account.Region) == "" {
 		return true
 	}
-	authMethod := strings.ToLower(strings.TrimSpace(account.AuthMethod))
-	return authMethod == "external_idp" || authMethod == "idc"
+	method := strings.TrimSpace(account.AuthMethod)
+	return strings.EqualFold(method, "external_idp") || strings.EqualFold(method, "idc")
 }
 
 // GetUsageLimits 获取账户使用量和订阅信息
@@ -258,6 +270,11 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 	if account == nil {
 		return "", fmt.Errorf("account is nil")
 	}
+	// api_key accounts authenticate directly (tokentype: API_KEY) and have no
+	// profile ARN. Skip the ListAvailableProfiles probe entirely.
+	if account.IsApiKeyCredential() {
+		return "", nil
+	}
 	if profileArn := strings.TrimSpace(account.ProfileArn); profileArn != "" {
 		return profileArn, nil
 	}
@@ -288,7 +305,7 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 
 	// Fallback: refresh token to get profileArn from auth response
 	if account.RefreshToken != "" {
-		_, _, _, refreshedArn, refreshErr := auth.RefreshToken(account)
+		_, _, _, refreshedArn, refreshErr := authRefreshToken(account)
 		if refreshErr == nil && refreshedArn != "" {
 			if updateErr := config.UpdateAccountProfileArn(account.ID, refreshedArn); updateErr != nil {
 				logger.Warnf("[ProfileArn] Failed to cache profile ARN for %s: %v", account.Email, updateErr)
@@ -597,7 +614,7 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "TEMPORARILY_SUSPENDED") {
 			// 账户被暂时封禁，自动禁用并标记封禁状态
-			logger.Warnf("[RefreshAccountInfo] Account %s is temporarily suspended: %v", account.Email, err)
+			logger.Warnf("[RefreshAccountInfo] Account %s is temporarily suspended: %v", accountEmailForLog(account), err)
 
 			// 更新账户封禁状态并自动禁用
 			updatedAccount := *account
@@ -612,10 +629,12 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 			}
 
 			return nil, fmt.Errorf("Account suspended: %w", err)
-		} else if strings.Contains(errMsg, "403") || strings.Contains(errMsg, "401") ||
-			strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "expired") {
-			// Token 相关错误，可能需要重新认证
-			logger.Warnf("[RefreshAccountInfo] Authentication error for %s: %v", account.Email, err)
+		} else if isAuthErrorMessage(errMsg) && !account.IsApiKeyCredential() {
+			// Token 相关错误，可能需要重新认证。api_key 账户不在 refresh 路径封禁：
+			// usage-limit 403 并非权威信号（可能是 region/配置问题），且 api_key 没有
+			// profile-ARN 跨区探测来交叉验证。chat 路径 (handleAccountFailure) 才是
+			// api_key 有效性的权威来源——真实请求的 403 会在那里封禁。
+			logger.Warnf("[RefreshAccountInfo] Authentication error for %s: %v", accountEmailForLog(account), err)
 
 			// 更新账户封禁状态为认证失败并自动禁用
 			updatedAccount := *account
@@ -635,7 +654,7 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 
 	// 如果成功获取信息，清除封禁状态（如果之前被标记）
 	if account.BanStatus != "" && account.BanStatus != "ACTIVE" {
-		logger.Infof("[RefreshAccountInfo] Account %s is now active, clearing ban status", account.Email)
+		logger.Infof("[RefreshAccountInfo] Account %s is now active, clearing ban status", accountEmailForLog(account))
 
 		updatedAccount := *account
 		updatedAccount.BanStatus = "ACTIVE"
