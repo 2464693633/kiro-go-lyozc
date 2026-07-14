@@ -4,17 +4,17 @@ services:
   kiro-go:
     build: .
     ports:
-      - "8080:8080"
-      # Enterprise SSO (Microsoft 365) callback. The hosted-portal sign-in
-      # redirects the browser to localhost:3128, so the operator must run that
-      # browser ON THE DOCKER HOST. Publishing host-side to 127.0.0.1 only keeps
-      # the callback off the host's external interfaces while still letting the
-      # host browser's localhost:3128 reach the container listener below.
-      - "127.0.0.1:3128:3128"
+      - "8083:8080"
+      # Enterprise SSO redirects the browser to localhost:3128. On a remote
+      # server, forward local port 3128 to this host-side port 3129 over SSH:
+      # ssh -L 3128:127.0.0.1:3129 user@server
+      # The container keeps listening on the OAuth-compatible port 3128.
+      - "127.0.0.1:3129:3128"
     volumes:
       - ./data:/app/data
     environment:
       - CONFIG_PATH=/app/data/config.json
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       # Bind host for the Enterprise SSO callback listener INSIDE the container.
       # Default (unset) is loopback-only (127.0.0.1/::1), which the published port
       # above cannot reach; 0.0.0.0 lets the forwarded connection land. The callback
