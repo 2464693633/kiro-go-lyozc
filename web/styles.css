@@ -2413,6 +2413,42 @@ img.brand-icon {
   flex: 1;
   min-width: 0;
 }
+
+.kiro-profile-list {
+  display: grid;
+  gap: 8px;
+}
+
+.kiro-profile-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.kiro-profile-option:hover,
+.kiro-profile-option:has(input:checked) {
+  border-color: var(--primary);
+  background: var(--muted);
+}
+
+.kiro-profile-option input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.kiro-profile-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.kiro-profile-copy .font-mono {
+  overflow-wrap: anywhere;
+}
 .api-code-row {
   margin-bottom: 0;
 }

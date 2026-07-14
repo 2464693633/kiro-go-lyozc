@@ -21,16 +21,16 @@ const tokenRefreshSkewSeconds int64 = 120
 
 // RequestLog stores details about a single API request (success or failure).
 type RequestLog struct {
-	Time      int64  `json:"time"`      // Unix timestamp
-	Endpoint  string `json:"endpoint"`  // claude/openai/responses
-	Model     string `json:"model"`     // Requested model
-	AccountID string `json:"accountId"` // Account used
-	Status    string `json:"status"`    // "success" or "error"
-	Error     string `json:"error"`     // Error message (empty on success)
-	ErrorType string `json:"errorType"` // Error category (empty on success)
-	Tokens    int    `json:"tokens"`    // Total tokens (input+output, 0 on failure)
-	Credits   float64 `json:"credits"`  // Credits consumed (0 on failure)
-	Duration  int64  `json:"duration"`  // Request duration in ms
+	Time      int64   `json:"time"`      // Unix timestamp
+	Endpoint  string  `json:"endpoint"`  // claude/openai/responses
+	Model     string  `json:"model"`     // Requested model
+	AccountID string  `json:"accountId"` // Account used
+	Status    string  `json:"status"`    // "success" or "error"
+	Error     string  `json:"error"`     // Error message (empty on success)
+	ErrorType string  `json:"errorType"` // Error category (empty on success)
+	Tokens    int     `json:"tokens"`    // Total tokens (input+output, 0 on failure)
+	Credits   float64 `json:"credits"`   // Credits consumed (0 on failure)
+	Duration  int64   `json:"duration"`  // Request duration in ms
 }
 
 const requestLogsMaxSize = 500
@@ -55,8 +55,15 @@ type Handler struct {
 	promptCache     *promptCacheTracker
 	tokenRefreshMu  sync.Mutex
 	// 请求日志 (环形缓冲区，包含成功和失败)
-	requestLogs   []RequestLog
-	requestLogsMu sync.RWMutex
+	requestLogs      []RequestLog
+	requestLogsMu    sync.RWMutex
+	kiroSsoPending   map[string]pendingKiroSsoSelection
+	kiroSsoPendingMu sync.Mutex
+}
+
+type pendingKiroSsoSelection struct {
+	Result   *auth.KiroSsoResult
+	Profiles []kiroProfileOption
 }
 
 type thinkingStreamSource int
@@ -238,6 +245,7 @@ func NewHandler() *Handler {
 		totalRequests:   int64(totalReq),
 		successRequests: int64(successReq),
 		failedRequests:  int64(failedReq),
+		kiroSsoPending:  make(map[string]pendingKiroSsoSelection),
 		totalTokens:     int64(totalTokens),
 		totalCredits:    totalCredits,
 		startTime:       time.Now().Unix(),
@@ -2849,6 +2857,9 @@ func (h *Handler) apiCancelKiroSso(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.SessionID != "" {
 		auth.CancelKiroSsoLogin(req.SessionID)
+		h.kiroSsoPendingMu.Lock()
+		delete(h.kiroSsoPending, req.SessionID)
+		h.kiroSsoPendingMu.Unlock()
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
@@ -2856,15 +2867,51 @@ func (h *Handler) apiCancelKiroSso(w http.ResponseWriter, r *http.Request) {
 // apiPollKiroSso reports the hosted-portal sign-in status. While the user is signing in it
 // returns completed=false; once the listener captures the authorization code it exchanges it,
 // persists the account (AuthMethod "external_idp" for an Azure tenant, "social" otherwise), and
-// returns completed=true. The profileArn is resolved lazily on first use (the EXTERNAL_IDP
-// token type header is now sent on CodeWhisperer calls), so it is not required here.
+// returns completed=true. When multiple regional profiles are visible it pauses before
+// persistence and asks the front end to submit the selected profile ARN.
 func (h *Handler) apiPollKiroSso(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID string `json:"sessionId"`
+		SessionID  string `json:"sessionId"`
+		ProfileArn string `json:"profileArn"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	if req.SessionID == "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "sessionId is required"})
+		return
+	}
+
+	h.kiroSsoPendingMu.Lock()
+	pending, hasPending := h.kiroSsoPending[req.SessionID]
+	h.kiroSsoPendingMu.Unlock()
+	if hasPending {
+		if req.ProfileArn == "" {
+			h.writeKiroSsoProfileSelection(w, pending.Profiles)
+			return
+		}
+		selected := kiroProfileOption{}
+		for _, profile := range pending.Profiles {
+			if profile.Arn == req.ProfileArn {
+				selected = profile
+				break
+			}
+		}
+		if selected.Arn == "" {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "selected profile is not available for this login"})
+			return
+		}
+		pending.Result.ProfileArn = selected.Arn
+		pending.Result.Region = selected.Region
+		h.kiroSsoPendingMu.Lock()
+		delete(h.kiroSsoPending, req.SessionID)
+		h.kiroSsoPendingMu.Unlock()
+		h.completeKiroSsoLogin(w, pending.Result)
 		return
 	}
 
@@ -2887,8 +2934,32 @@ func (h *Handler) apiPollKiroSso(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 授权完成，创建账号
-	account := config.Account{
+	if result.AuthMethod == "external_idp" && strings.TrimSpace(result.ProfileArn) == "" {
+		probeAccount := accountFromKiroSsoResult(result)
+		profiles, profileErr := listAvailableProfilesAcrossRegions(&probeAccount)
+		if profileErr != nil {
+			logger.Warnf("[KiroSSO] Failed to detect profiles for %s: %v", result.Email, profileErr)
+		}
+		if len(profiles) == 1 {
+			result.ProfileArn = profiles[0].Arn
+			result.Region = profiles[0].Region
+		} else if len(profiles) > 1 {
+			h.kiroSsoPendingMu.Lock()
+			if h.kiroSsoPending == nil {
+				h.kiroSsoPending = make(map[string]pendingKiroSsoSelection)
+			}
+			h.kiroSsoPending[req.SessionID] = pendingKiroSsoSelection{Result: result, Profiles: profiles}
+			h.kiroSsoPendingMu.Unlock()
+			h.writeKiroSsoProfileSelection(w, profiles)
+			return
+		}
+	}
+
+	h.completeKiroSsoLogin(w, result)
+}
+
+func accountFromKiroSsoResult(result *auth.KiroSsoResult) config.Account {
+	return config.Account{
 		ID:            auth.GenerateAccountID(),
 		Email:         result.Email,
 		AccessToken:   result.AccessToken,
@@ -2905,6 +2976,19 @@ func (h *Handler) apiPollKiroSso(w http.ResponseWriter, r *http.Request) {
 		Enabled:       true,
 		MachineId:     config.GenerateMachineId(),
 	}
+}
+
+func (h *Handler) writeKiroSsoProfileSelection(w http.ResponseWriter, profiles []kiroProfileOption) {
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":           true,
+		"completed":         false,
+		"selectionRequired": true,
+		"profiles":          profiles,
+	})
+}
+
+func (h *Handler) completeKiroSsoLogin(w http.ResponseWriter, result *auth.KiroSsoResult) {
+	account := accountFromKiroSsoResult(result)
 
 	if err := config.AddAccount(account); err != nil {
 		w.WriteHeader(500)

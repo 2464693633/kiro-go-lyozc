@@ -1,7 +1,10 @@
 package proxy
 
 import (
+	"io"
 	"kiro-go/config"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +109,37 @@ func TestKiroProfileRegionCandidatesEnvOverride(t *testing.T) {
 	// A non-external_idp account ignores the env fallbacks entirely.
 	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "idc", Region: "us-east-1"})
 	assertOrder(t, got, []string{"us-east-1"})
+}
+
+func TestListAvailableProfilesAcrossRegionsReturnsAllProfiles(t *testing.T) {
+	kiroRestHttpStore.Store(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"profiles":[{"arn":"arn:aws:codewhisperer:us-east-1:1:profile/US"}]}`
+			if req.URL.Host == "q.eu-central-1.amazonaws.com" {
+				body = `{"profiles":[{"arn":"arn:aws:codewhisperer:eu-central-1:1:profile/EU"}]}`
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	})
+	t.Cleanup(func() { InitKiroHttpClient("") })
+
+	profiles, err := listAvailableProfilesAcrossRegions(&config.Account{
+		AuthMethod: "external_idp",
+		Region:     "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("list profiles: %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("profiles = %#v, want two regional profiles", profiles)
+	}
+	if profiles[0].Region != "us-east-1" || profiles[1].Region != "eu-central-1" {
+		t.Fatalf("profile regions = %#v, want us-east-1 then eu-central-1", profiles)
+	}
 }
 
 func assertOrder(t *testing.T, got, want []string) {

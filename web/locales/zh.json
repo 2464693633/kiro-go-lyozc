@@ -231,6 +231,8 @@
   "modal.enterpriseSsoDesc": "通过 Kiro 托管 SSO 添加 Microsoft 365 / Entra ID（Azure AD）租户账号",
   "kirosso.hostNote": "请在运行代理的本机打开登录链接（与代理同一主机）。浏览器会自动跳转到 Microsoft 365 登录流程。",
   "kirosso.openInstruction": "已打开浏览器标签页。请使用 Microsoft 365 工作/学校账号登录，然后返回此处。建议使用访客/无痕窗口以避免缓存会话干扰。",
+  "kirosso.profileSelectHint": "检测到该账号有多个 Kiro Profile（例如不同区域），请选择要使用的一个：",
+  "kirosso.useSelectedProfile": "使用所选 Profile",
   "cookie.howToGet": "如何获取 RefreshToken？",
   "cookie.step1": "打开浏览器，访问并登录",
   "cookie.step2": "在页面空白处右键 → 检查 → Application → Cookies → https://app.kiro.dev",

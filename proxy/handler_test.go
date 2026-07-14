@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"kiro-go/auth"
 	"kiro-go/config"
 	accountpool "kiro-go/pool"
 	"net/http"
@@ -22,6 +23,55 @@ func TestThinkingSourceReasoningFirst(t *testing.T) {
 	}
 	if allowTagSource(&source) {
 		t.Fatalf("expected tag source to be rejected after reasoning source selected")
+	}
+}
+
+func TestKiroSsoProfileSelectionPersistsChosenProfile(t *testing.T) {
+	cfgFile := t.TempDir() + "/config.json"
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	h := &Handler{
+		pool: accountpool.GetPool(),
+		kiroSsoPending: map[string]pendingKiroSsoSelection{
+			"session-1": {
+				Result: &auth.KiroSsoResult{
+					AccessToken:  "access-token",
+					RefreshToken: "refresh-token",
+					AuthMethod:   "external_idp",
+					Provider:     "AzureAD",
+					Region:       "us-east-1",
+					ExpiresIn:    3600,
+					Email:        "user@example.com",
+				},
+				Profiles: []kiroProfileOption{
+					{Arn: "arn:aws:codewhisperer:us-east-1:1:profile/US", Region: "us-east-1"},
+					{Arn: "arn:aws:codewhisperer:eu-central-1:1:profile/EU", Region: "eu-central-1"},
+				},
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/kiro-sso/poll", strings.NewReader(
+		`{"sessionId":"session-1","profileArn":"arn:aws:codewhisperer:eu-central-1:1:profile/EU"}`,
+	))
+	w := httptest.NewRecorder()
+	h.apiPollKiroSso(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	accounts := config.GetAccounts()
+	if len(accounts) != 1 {
+		t.Fatalf("accounts = %#v, want one", accounts)
+	}
+	if accounts[0].ProfileArn != "arn:aws:codewhisperer:eu-central-1:1:profile/EU" {
+		t.Fatalf("profileArn = %q", accounts[0].ProfileArn)
+	}
+	if accounts[0].Region != "eu-central-1" {
+		t.Fatalf("region = %q, want eu-central-1", accounts[0].Region)
+	}
+	if _, ok := h.kiroSsoPending["session-1"]; ok {
+		t.Fatal("pending selection was not cleared")
 	}
 }
 

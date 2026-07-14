@@ -2489,6 +2489,14 @@
       '</div>' +
       '<p id="kiroSsoStatus" class="text-center text-sm mt-4 muted-text">' + escapeHtml(t('builderid.waiting')) + '</p>' +
       '<div class="modal-footer"><button class="btn btn-secondary" id="kiroSsoCancelBtn" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>' +
+      '</div>' +
+      '<div id="kiroSsoStep3" class="hidden">' +
+      '<div class="message message-info"><p class="text-xs">' + escapeHtml(t('kirosso.profileSelectHint')) + '</p></div>' +
+      '<div id="kiroSsoProfileList" class="kiro-profile-list mt-3"></div>' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" id="kiroSsoProfileCancelBtn" type="button">' + escapeHtml(t('common.cancel')) + '</button>' +
+      '<button class="btn btn-primary" id="kiroSsoProfileConfirmBtn" type="button" disabled>' + escapeHtml(t('kirosso.useSelectedProfile')) + '</button>' +
+      '</div>' +
       '</div>';
     $('startKiroSsoBtn').addEventListener('click', startKiroSsoLogin);
   }
@@ -2518,7 +2526,9 @@
     kiroSsoPollTimer = setTimeout(async () => {
       const res = await api('/auth/kiro-sso/poll', { method: 'POST', body: JSON.stringify({ sessionId: kiroSsoSession }) });
       const d = await res.json();
-      if (d.completed) {
+      if (d.selectionRequired && Array.isArray(d.profiles)) {
+        showKiroSsoProfileSelection(d.profiles);
+      } else if (d.completed) {
         // Session is already consumed server-side; clear it so closeModal() does
         // not fire a redundant cancel for an account that succeeded.
         kiroSsoSession = '';
@@ -2533,6 +2543,44 @@
         cancelKiroSsoLogin();
       }
     }, interval * 1000);
+  }
+  function showKiroSsoProfileSelection(profiles) {
+    $('kiroSsoStep2').classList.add('hidden');
+    $('kiroSsoStep3').classList.remove('hidden');
+    const list = $('kiroSsoProfileList');
+    list.innerHTML = profiles.map((profile, index) =>
+      '<label class="kiro-profile-option">' +
+      '<input type="radio" name="kiroSsoProfile" value="' + escapeHtml(profile.arn || '') + '"' + (index === 0 ? ' checked' : '') + '>' +
+      '<span class="kiro-profile-copy">' +
+      '<strong>' + escapeHtml(profile.region || '-') + '</strong>' +
+      '<span class="font-mono text-xs">' + escapeHtml(profile.arn || '') + '</span>' +
+      '</span>' +
+      '</label>'
+    ).join('');
+    const confirmBtn = $('kiroSsoProfileConfirmBtn');
+    confirmBtn.disabled = profiles.length === 0;
+    confirmBtn.onclick = submitKiroSsoProfileSelection;
+    $('kiroSsoProfileCancelBtn').onclick = cancelKiroSsoLogin;
+  }
+  async function submitKiroSsoProfileSelection() {
+    const selected = document.querySelector('input[name="kiroSsoProfile"]:checked');
+    if (!selected) return;
+    const confirmBtn = $('kiroSsoProfileConfirmBtn');
+    confirmBtn.disabled = true;
+    const res = await api('/auth/kiro-sso/poll', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId: kiroSsoSession, profileArn: selected.value })
+    });
+    const d = await res.json();
+    if (d.completed) {
+      kiroSsoSession = '';
+      closeModal(); loadAccounts(); loadStats();
+      toastPrimary(t('builderid.success') + ': ' + (d.account?.email || d.account?.id));
+      autoRefreshNewAccount(d.account?.id);
+      return;
+    }
+    confirmBtn.disabled = false;
+    toastError(t('common.failed') + ': ' + (d.error || ''));
   }
   function cancelKiroSsoLogin() {
     if (kiroSsoPollTimer) { clearTimeout(kiroSsoPollTimer); kiroSsoPollTimer = null; }

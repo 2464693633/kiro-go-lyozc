@@ -413,30 +413,82 @@ func resolveProfileArnAcrossRegions(account *config.Account) (string, error) {
 	return "", lastErr
 }
 
+type kiroProfileOption struct {
+	Arn    string `json:"arn"`
+	Region string `json:"region"`
+}
+
+// listAvailableProfilesAcrossRegions returns every distinct profile visible in
+// the candidate regions. Login uses the full list to let the operator choose
+// when a tenant exposes more than one regional Kiro profile.
+func listAvailableProfilesAcrossRegions(account *config.Account) ([]kiroProfileOption, error) {
+	var lastErr error
+	seen := make(map[string]bool)
+	var profiles []kiroProfileOption
+	for _, region := range kiroProfileRegionCandidates(account) {
+		arns, probeErr := listAvailableProfileArnsWithRetryInRegion(account, region)
+		if probeErr == nil {
+			for _, arn := range arns {
+				arn = strings.TrimSpace(arn)
+				if arn == "" || seen[arn] {
+					continue
+				}
+				seen[arn] = true
+				profileRegion := regionFromProfileArn(arn)
+				if profileRegion == "" {
+					profileRegion = region
+				}
+				profiles = append(profiles, kiroProfileOption{Arn: arn, Region: profileRegion})
+			}
+		}
+		if probeErr != nil {
+			lastErr = probeErr
+			if isBuilderIDProfileUnsupportedError(account, probeErr) {
+				return nil, probeErr
+			}
+		}
+	}
+	if len(profiles) > 0 {
+		return profiles, nil
+	}
+	return nil, lastErr
+}
+
 // listAvailableProfilesWithRetryInRegion calls ListAvailableProfiles against a
 // specific region, retrying transient failures (network errors, 5xx, 429) with
 // short backoff. An empty profile list or 4xx (other than 429) is treated as
 // authoritative and not retried — they reflect account state, not upstream flakiness.
 func listAvailableProfilesWithRetryInRegion(account *config.Account, region string) (string, error) {
+	profiles, err := listAvailableProfileArnsWithRetryInRegion(account, region)
+	if err != nil {
+		return "", err
+	}
+	if len(profiles) == 0 {
+		return "", fmt.Errorf("empty profile list")
+	}
+	return profiles[0], nil
+}
+
+func listAvailableProfileArnsWithRetryInRegion(account *config.Account, region string) ([]string, error) {
 	const maxAttempts = 3
 	backoff := 200 * time.Millisecond
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		profileArn, err := listAvailableProfilesInRegion(account, region)
+		profileArns, err := listAvailableProfileArnsInRegion(account, region)
 		if err == nil {
-			return profileArn, nil
+			return profileArns, nil
 		}
 		lastErr = err
 		if !isTransientProfileFetchError(err) || attempt == maxAttempts {
-			return "", err
+			return nil, err
 		}
 		logger.Debugf("[ProfileArn] ListAvailableProfiles transient failure for %s in %s (attempt %d/%d): %v",
 			account.Email, region, attempt, maxAttempts, err)
 		time.Sleep(backoff)
 		backoff *= 2
 	}
-	return "", lastErr
+	return nil, lastErr
 }
 
 // isTransientProfileFetchError reports whether a ListAvailableProfiles error
@@ -463,23 +515,31 @@ func isTransientProfileFetchError(err error) bool {
 // stored one — is what makes cross-region detection possible: the same credential is
 // probed against each candidate region until one returns a profile.
 func listAvailableProfilesInRegion(account *config.Account, region string) (string, error) {
+	profiles, err := listAvailableProfileArnsInRegion(account, region)
+	if err != nil {
+		return "", err
+	}
+	return profiles[0], nil
+}
+
+func listAvailableProfileArnsInRegion(account *config.Account, region string) ([]string, error) {
 	endpoint := regionalizeURLForRegion(fmt.Sprintf("%s/ListAvailableProfiles", kiroRestAPIBase), region)
 	req, err := http.NewRequest("POST", endpoint, strings.NewReader(`{"maxResults":10}`))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	setKiroHeaders(req, account)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -488,14 +548,18 @@ func listAvailableProfilesInRegion(account *config.Account, region string) (stri
 		} `json:"profiles"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return nil, err
 	}
+	var profiles []string
 	for _, profile := range result.Profiles {
 		if profileArn := strings.TrimSpace(profile.Arn); profileArn != "" {
-			return profileArn, nil
+			profiles = append(profiles, profileArn)
 		}
 	}
-	return "", fmt.Errorf("empty profile list")
+	if len(profiles) == 0 {
+		return nil, fmt.Errorf("empty profile list")
+	}
+	return profiles, nil
 }
 
 func withProfileArnQuery(rawURL string, account *config.Account) string {
