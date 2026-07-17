@@ -149,12 +149,38 @@ func (p *AccountPool) GetModelList(accountID string) []string {
 
 // accountHasModel 检查账号是否支持指定模型。
 // 若该账号尚无模型列表（冷启动），视为支持所有模型。
+// 也做版本号连字符/点号的模糊匹配（4.6 ↔ 4-6），兼容 Anthropic 中转服务
+// 使用连字符格式而代理内部使用点号格式的情况。
 func (p *AccountPool) accountHasModel(accountID, model string) bool {
 	list, ok := p.modelLists[accountID]
 	if !ok || len(list) == 0 {
 		return true // 冷启动：列表未就绪，乐观放行
 	}
-	return list[strings.ToLower(strings.TrimSpace(model))]
+	key := strings.ToLower(strings.TrimSpace(model))
+	if list[key] {
+		return true
+	}
+	// 模糊匹配：将版本号中的 digit.digit 转为 digit-digit 再查一次，
+	// 兼容 Anthropic 中转服务（存 4-6）与代理规范化名（查 4.6）不一致的情况。
+	alt := versionDotToHyphen(key)
+	return alt != key && list[alt]
+}
+
+// versionDotToHyphen 将模型名中版本号的点号替换为连字符（4.6 → 4-6）。
+// 只替换两侧均为数字的点，避免误改其他部分。
+func versionDotToHyphen(model string) string {
+	runes := []rune(model)
+	out := make([]rune, 0, len(runes))
+	for i, r := range runes {
+		if r == '.' && i > 0 && i < len(runes)-1 {
+			if runes[i-1] >= '0' && runes[i-1] <= '9' && runes[i+1] >= '0' && runes[i+1] <= '9' {
+				out = append(out, '-')
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
 
 // GetNextForModel 获取下一个支持指定模型的可用账号。
