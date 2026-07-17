@@ -886,6 +886,7 @@
     if (normalized === 'builderid') return 'BuilderID';
     if (normalized === 'github') return t('local.providerGithub');
     if (normalized === 'google') return t('local.providerGoogle');
+    if (normalized === 'anthropic') return 'Anthropic API';
     return method;
   }
   function getStatusBadge(a) {
@@ -1539,6 +1540,8 @@
     $('allowOverUsage').checked = d.allowOverUsage || false;
     const maxPayloadEl = document.getElementById('maxPayloadBytes');
     if (maxPayloadEl) maxPayloadEl.value = String(d.maxPayloadBytes || 2000000);
+    const cacheMaxRatioEl = document.getElementById('cacheMaxRatio');
+    if (cacheMaxRatioEl) cacheMaxRatioEl.value = String(d.promptCacheMaxRatio || 0.85);
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1646,7 +1649,9 @@
     const allowOverUsage = $('allowOverUsage').checked;
     const maxPayloadEl = document.getElementById('maxPayloadBytes');
     const maxPayloadBytes = maxPayloadEl ? parseInt(maxPayloadEl.value || '0', 10) : 0;
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes }) });
+    const cacheMaxRatioEl = document.getElementById('cacheMaxRatio');
+    const promptCacheMaxRatio = cacheMaxRatioEl ? parseFloat(cacheMaxRatioEl.value || '0.85') : 0.85;
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {
@@ -2058,6 +2063,7 @@
     else if (type === 'cookie') modalCookie(title, body);
     else if (type === 'apikey') modalApiKey(title, body);
     else if (type === 'apikeybatch') modalApiKeyBatch(title, body);
+    else if (type === 'anthropic') modalAnthropicKey(title, body);
     if (!modal.classList.contains('active')) openDialog('addModal');
     enhanceCustomSelects(body);
   }
@@ -2088,6 +2094,7 @@
       methodCard('cookie', t('modal.cookieTitle'), t('modal.cookieDesc')) +
       methodCard('apikey', t('modal.apikeyTitle'), t('modal.apikeyDesc')) +
       methodCard('apikeybatch', t('modal.apikeyBatchTitle'), t('modal.apikeyBatchDesc')) +
+      methodCard('anthropic', t('modal.anthropicTitle'), t('modal.anthropicDesc')) +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
   }
@@ -2272,6 +2279,23 @@
       '<button class="btn btn-primary" id="importApiKeyBatchBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
       '</div>';
     $('importApiKeyBatchBtn').addEventListener('click', importApiKeysBatch);
+  }
+  function modalAnthropicKey(title, body) {
+    title.textContent = t('modal.anthropicTitle');
+    body.innerHTML =
+      '<p class="help-block">' + escapeHtml(t('anthropic.hint')) + '</p>' +
+      '<div class="form-group"><label>' + escapeHtml(t('anthropic.key')) + '</label>' +
+      '<input type="text" id="anthropicKeyValue" class="font-mono" placeholder="' + escapeAttr(t('anthropic.keyPlaceholder')) + '" />' +
+      '</div>' +
+      '<div class="form-group"><label>' + escapeHtml(t('anthropic.baseURL')) + '</label>' +
+      '<input type="text" id="anthropicBaseURL" placeholder="' + escapeAttr(t('anthropic.baseURLPlaceholder')) + '" />' +
+      '<small>' + escapeHtml(t('anthropic.baseURLHint')) + '</small>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
+      '<button class="btn btn-primary" id="importAnthropicKeyBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
+      '</div>';
+    $('importAnthropicKeyBtn').addEventListener('click', importAnthropicKey);
   }
   function updateLocalFields() {
     const p = $('localProvider').value;
@@ -2469,6 +2493,17 @@
       toastPrimary(msg, { duration: 6000 });
       renderApiKeyBatchResults(d.results || []);
     } else toastError(t('common.failed') + ': ' + (d.error || ''));
+  }
+  async function importAnthropicKey() {
+    const kiroApiKey = $('anthropicKeyValue').value.trim();
+    if (!kiroApiKey) return toastWarning(t('anthropic.keyMissing'));
+    const baseURL = ($('anthropicBaseURL') && $('anthropicBaseURL').value.trim()) || '';
+    const body = { kiroApiKey, authMethod: 'anthropic', enabled: true };
+    if (baseURL) body.baseURL = baseURL;
+    const res = await api('/accounts', { method: 'POST', body: JSON.stringify(body) });
+    const d = await res.json();
+    if (d.success) { closeModal(); loadAccounts(); loadStats(); toastSuccess(t('anthropic.added')); }
+    else toastError(t('common.failed') + ': ' + (d.error || ''));
   }
   function renderApiKeyBatchResults(results) {
     // Per-key detail surfaces via the toast summary above; log masked failures

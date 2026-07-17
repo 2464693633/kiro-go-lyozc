@@ -845,9 +845,9 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// Stream or non-stream
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	if req.Stream {
-		h.handleClaudeStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
+		h.handleClaudeStream(w, kiroPayload, effectiveReq, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
 	} else {
-		h.handleClaudeNonStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
+		h.handleClaudeNonStream(w, kiroPayload, effectiveReq, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
 	}
 }
 
@@ -858,7 +858,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 var streamKeepaliveInterval = 10 * time.Second
 
 // handleClaudeStream Claude 流式响应
-func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
+func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, claudeReq *ClaudeRequest, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -929,6 +929,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 	startInputTokens := estimatedInputTokens
 	excluded := make(map[string]bool)
 	var lastErr error
+	var lastErrAccountID string
 	messageStarted := false
 	var messageStartUsage promptCacheUsage
 
@@ -963,6 +964,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			continue
@@ -1285,9 +1287,16 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		var err error
+		if account.IsAnthropicAccount() {
+			reqBody, _ := json.Marshal(claudeReq)
+			err = callAnthropicAPI(account, reqBody, callback)
+		} else {
+			err = CallKiroAPI(account, payload, callback)
+		}
 		if err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			// Cache-dispatch observability: failed dispatch contributes 0 tokens so
@@ -1372,7 +1381,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 	// 避免 sendClaudeError 的 WriteHeader+JSON 与心跳的 ': keepalive' 并发写同一个 w。
 	stopHeartbeat()
 	if lastErr != nil {
-		h.recordFailureWithDetails("claude", model, "", lastErr)
+		h.recordFailureWithDetails("claude", model, lastErrAccountID, lastErr)
 	}
 	hbMu.Lock()
 	didCommit := committed
@@ -1564,9 +1573,10 @@ func (h *Handler) getRequestLogs() []RequestLog {
 }
 
 // handleClaudeNonStream Claude 非流式响应
-func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
+func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayload, claudeReq *ClaudeRequest, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
 	excluded := make(map[string]bool)
 	var lastErr error
+	var lastErrAccountID string
 	reqStart := time.Now()
 
 	retryBudget := resolveAccountRetryBudget(h.pool.Count())
@@ -1580,6 +1590,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			continue
@@ -1616,9 +1627,16 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		var err error
+		if account.IsAnthropicAccount() {
+			reqBody, _ := json.Marshal(claudeReq)
+			err = callAnthropicAPI(account, reqBody, callback)
+		} else {
+			err = CallKiroAPI(account, payload, callback)
+		}
 		if err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			// Cache-dispatch observability: failed dispatch contributes 0 tokens so
@@ -1702,7 +1720,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		return
 	}
 
-	h.recordFailureWithDetails("claude", model, "", lastErr)
+	h.recordFailureWithDetails("claude", model, lastErrAccountID, lastErr)
 	h.sendClaudeError(w, 500, "api_error", improperlyFormedClientMessage(lastErr))
 }
 
@@ -1752,14 +1770,14 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	if req.Stream {
-		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID)
+		h.handleOpenAIStream(w, kiroPayload, &req, thinkingCfg.Suffix, req.Model, thinking, estimatedInputTokens, apiKeyID)
 	} else {
-		h.handleOpenAINonStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID)
+		h.handleOpenAINonStream(w, kiroPayload, &req, thinkingCfg.Suffix, req.Model, thinking, estimatedInputTokens, apiKeyID)
 	}
 }
 
 // handleOpenAIStream OpenAI 流式响应
-func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
+func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload, openAIReq *OpenAIRequest, thinkingSuffix string, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1829,6 +1847,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 	chatID := "chatcmpl-" + uuid.New().String()
 	excluded := make(map[string]bool)
 	var lastErr error
+	var lastErrAccountID string
 	reqStart := time.Now()
 
 	retryBudget := resolveAccountRetryBudget(h.pool.Count())
@@ -1842,6 +1861,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			continue
@@ -2126,9 +2146,17 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		var err error
+		if account.IsAnthropicAccount() {
+			claudeReq := openAIToClaudeRequest(openAIReq, thinking, thinkingSuffix)
+			reqBody, _ := json.Marshal(claudeReq)
+			err = callAnthropicAPI(account, reqBody, callback)
+		} else {
+			err = CallKiroAPI(account, payload, callback)
+		}
 		if err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			if isUpstreamPermanentError(err) {
@@ -2205,7 +2233,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 	// 避免 sendOpenAIError 的 WriteHeader+JSON 与心跳的 ': keepalive' 并发写同一个 w。
 	stopHeartbeat()
 	if lastErr != nil {
-		h.recordFailureWithDetails("openai", model, "", lastErr)
+		h.recordFailureWithDetails("openai", model, lastErrAccountID, lastErr)
 	}
 	hbMu.Lock()
 	didCommit := committed
@@ -2246,9 +2274,10 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
-func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
+func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayload, openAIReq *OpenAIRequest, thinkingSuffix string, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
 	excluded := make(map[string]bool)
 	var lastErr error
+	var lastErrAccountID string
 	reqStart := time.Now()
 
 	retryBudget := resolveAccountRetryBudget(h.pool.Count())
@@ -2262,6 +2291,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			continue
@@ -2290,9 +2320,17 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		var err error
+		if account.IsAnthropicAccount() {
+			claudeReq := openAIToClaudeRequest(openAIReq, thinking, thinkingSuffix)
+			reqBody, _ := json.Marshal(claudeReq)
+			err = callAnthropicAPI(account, reqBody, callback)
+		} else {
+			err = CallKiroAPI(account, payload, callback)
+		}
 		if err != nil {
 			lastErr = err
+			lastErrAccountID = account.ID
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			if isUpstreamPermanentError(err) {
@@ -2336,7 +2374,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		return
 	}
 
-	h.recordFailureWithDetails("openai", model, "", lastErr)
+	h.recordFailureWithDetails("openai", model, lastErrAccountID, lastErr)
 	h.sendOpenAIError(w, 500, "server_error", improperlyFormedClientMessage(lastErr))
 }
 
@@ -2633,6 +2671,21 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		account.AuthMethod = "api_key"
+		account.AccessToken = account.KiroApiKey
+		account.RefreshToken = ""
+		account.ExpiresAt = 0
+	}
+
+	// anthropic: route to api.anthropic.com using a native Anthropic API key.
+	// The key is stored in AccessToken (mirrored from KiroApiKey). No OAuth
+	// refresh or profile-ARN resolution occurs for these accounts.
+	if account.IsAnthropicAccount() {
+		if account.KiroApiKey == "" {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "kiroApiKey (Anthropic API key) is required for anthropic accounts"})
+			return
+		}
+		account.AuthMethod = "anthropic"
 		account.AccessToken = account.KiroApiKey
 		account.RefreshToken = ""
 		account.ExpiresAt = 0
@@ -3731,12 +3784,13 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"apiKey":          config.GetApiKey(),
-		"requireApiKey":   config.IsApiKeyRequired(),
-		"port":            config.GetPort(),
-		"host":            config.GetHost(),
-		"allowOverUsage":  config.GetAllowOverUsage(),
-		"maxPayloadBytes": config.GetMaxPayloadBytes(),
+		"apiKey":               config.GetApiKey(),
+		"requireApiKey":        config.IsApiKeyRequired(),
+		"port":                 config.GetPort(),
+		"host":                 config.GetHost(),
+		"allowOverUsage":       config.GetAllowOverUsage(),
+		"maxPayloadBytes":      config.GetMaxPayloadBytes(),
+		"promptCacheMaxRatio":  config.GetPromptCacheMaxRatio(),
 	})
 }
 
@@ -3785,11 +3839,12 @@ func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey          *string `json:"apiKey,omitempty"`
-		RequireApiKey   *bool   `json:"requireApiKey,omitempty"`
-		Password        string  `json:"password,omitempty"`
-		AllowOverUsage  *bool   `json:"allowOverUsage,omitempty"`
-		MaxPayloadBytes *int    `json:"maxPayloadBytes,omitempty"`
+		ApiKey              *string  `json:"apiKey,omitempty"`
+		RequireApiKey       *bool    `json:"requireApiKey,omitempty"`
+		Password            string   `json:"password,omitempty"`
+		AllowOverUsage      *bool    `json:"allowOverUsage,omitempty"`
+		MaxPayloadBytes     *int     `json:"maxPayloadBytes,omitempty"`
+		PromptCacheMaxRatio *float64 `json:"promptCacheMaxRatio,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3816,6 +3871,20 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	if req.MaxPayloadBytes != nil {
 		if err := config.UpdateMaxPayloadBytes(*req.MaxPayloadBytes); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.PromptCacheMaxRatio != nil {
+		ratio := *req.PromptCacheMaxRatio
+		if ratio < 0.5 || ratio > 0.99 {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "promptCacheMaxRatio must be between 0.5 and 0.99"})
+			return
+		}
+		if err := config.UpdatePromptCacheMaxRatio(ratio); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

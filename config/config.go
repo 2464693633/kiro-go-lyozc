@@ -164,6 +164,11 @@ type Account struct {
 	// Per-account outbound proxy (falls back to global ProxyURL if empty)
 	ProxyURL string `json:"proxyURL,omitempty"`
 
+	// BaseURL overrides the upstream API endpoint for this account.
+	// For Anthropic accounts: defaults to https://api.anthropic.com when empty.
+	// Supports third-party Anthropic-compatible relay services.
+	BaseURL string `json:"baseURL,omitempty"`
+
 	// Priority weight for load balancing (higher = more requests)
 	Weight int `json:"weight,omitempty"` // 0 or 1 = normal, 2+ = higher priority
 
@@ -225,11 +230,23 @@ func (a *Account) IsApiKeyCredential() bool {
 	if a == nil {
 		return false
 	}
-	if a.KiroApiKey != "" {
+	if a.KiroApiKey != "" && !a.IsAnthropicAccount() {
 		return true
 	}
-	m := strings.ToLower(a.AuthMethod)
+	m := strings.ToLower(strings.TrimSpace(a.AuthMethod))
 	return m == "api_key" || m == "apikey"
+}
+
+// IsAnthropicAccount reports whether the account routes to the real Anthropic
+// API (api.anthropic.com) using a native Anthropic API key. These accounts
+// bypass Kiro format translation and OAuth refresh entirely; the key is stored
+// in AccessToken (mirrored from KiroApiKey at import time).
+func (a *Account) IsAnthropicAccount() bool {
+	if a == nil {
+		return false
+	}
+	m := strings.ToLower(strings.TrimSpace(a.AuthMethod))
+	return m == "anthropic"
 }
 
 // EffectiveAuthRegion returns the region used for token-refresh endpoints, with
