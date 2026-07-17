@@ -1541,7 +1541,7 @@
     const maxPayloadEl = document.getElementById('maxPayloadBytes');
     if (maxPayloadEl) maxPayloadEl.value = String(d.maxPayloadBytes || 2000000);
     const cacheMaxRatioEl = document.getElementById('cacheMaxRatio');
-    if (cacheMaxRatioEl) cacheMaxRatioEl.value = String(d.promptCacheMaxRatio || 0.85);
+    if (cacheMaxRatioEl) cacheMaxRatioEl.value = String(Math.round((d.promptCacheMaxRatio || 0.85) * 100));
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1650,7 +1650,7 @@
     const maxPayloadEl = document.getElementById('maxPayloadBytes');
     const maxPayloadBytes = maxPayloadEl ? parseInt(maxPayloadEl.value || '0', 10) : 0;
     const cacheMaxRatioEl = document.getElementById('cacheMaxRatio');
-    const promptCacheMaxRatio = cacheMaxRatioEl ? parseFloat(cacheMaxRatioEl.value || '0.85') : 0.85;
+    const promptCacheMaxRatio = cacheMaxRatioEl ? Math.max(0, Math.min(99, parseInt(cacheMaxRatioEl.value || '85', 10))) / 100 : 0.85;
     await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
