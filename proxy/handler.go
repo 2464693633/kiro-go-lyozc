@@ -3808,6 +3808,8 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"allowOverUsage":       config.GetAllowOverUsage(),
 		"maxPayloadBytes":      config.GetMaxPayloadBytes(),
 		"promptCacheMaxRatio":  config.GetPromptCacheMaxRatio(),
+		"inputTokenMultiplier": config.GetInputTokenMultiplier(),
+		"cacheReadMultiplier":  config.GetCacheReadMultiplier(),
 	})
 }
 
@@ -3856,12 +3858,14 @@ func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey              *string  `json:"apiKey,omitempty"`
-		RequireApiKey       *bool    `json:"requireApiKey,omitempty"`
-		Password            string   `json:"password,omitempty"`
-		AllowOverUsage      *bool    `json:"allowOverUsage,omitempty"`
-		MaxPayloadBytes     *int     `json:"maxPayloadBytes,omitempty"`
-		PromptCacheMaxRatio *float64 `json:"promptCacheMaxRatio,omitempty"`
+		ApiKey               *string  `json:"apiKey,omitempty"`
+		RequireApiKey        *bool    `json:"requireApiKey,omitempty"`
+		Password             string   `json:"password,omitempty"`
+		AllowOverUsage       *bool    `json:"allowOverUsage,omitempty"`
+		MaxPayloadBytes      *int     `json:"maxPayloadBytes,omitempty"`
+		PromptCacheMaxRatio  *float64 `json:"promptCacheMaxRatio,omitempty"`
+		InputTokenMultiplier *float64 `json:"inputTokenMultiplier,omitempty"`
+		CacheReadMultiplier  *float64 `json:"cacheReadMultiplier,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3902,6 +3906,27 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := config.UpdatePromptCacheMaxRatio(ratio); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.InputTokenMultiplier != nil || req.CacheReadMultiplier != nil {
+		inputMul := config.GetInputTokenMultiplier()
+		cacheReadMul := config.GetCacheReadMultiplier()
+		if req.InputTokenMultiplier != nil {
+			inputMul = *req.InputTokenMultiplier
+		}
+		if req.CacheReadMultiplier != nil {
+			cacheReadMul = *req.CacheReadMultiplier
+		}
+		if inputMul <= 0 || cacheReadMul <= 0 {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "multipliers must be > 0"})
+			return
+		}
+		if err := config.UpdateTokenMultipliers(inputMul, cacheReadMul); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

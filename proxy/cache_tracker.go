@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"kiro-go/config"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -895,15 +896,22 @@ func billedClaudeInputTokens(inputTokens int, usage promptCacheUsage) int {
 }
 
 func buildClaudeUsageMap(inputTokens, outputTokens int, usage promptCacheUsage, includeCache bool) map[string]interface{} {
+	inputMul := config.GetInputTokenMultiplier()
+	cacheReadMul := config.GetCacheReadMultiplier()
+
+	billedInput := billedClaudeInputTokens(inputTokens, usage)
+	scaledInput := int(math.Round(float64(billedInput) * inputMul))
+	scaledCacheRead := int(math.Round(float64(usage.CacheReadInputTokens) * cacheReadMul))
+
 	result := map[string]interface{}{
-		"input_tokens":  billedClaudeInputTokens(inputTokens, usage),
+		"input_tokens":  scaledInput,
 		"output_tokens": outputTokens,
 	}
 	if !includeCache {
 		return result
 	}
 	result["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
-	result["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	result["cache_read_input_tokens"] = scaledCacheRead
 	result["cache_creation"] = map[string]int{
 		"ephemeral_5m_input_tokens": usage.CacheCreation5mInputTokens,
 		"ephemeral_1h_input_tokens": usage.CacheCreation1hInputTokens,

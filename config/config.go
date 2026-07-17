@@ -398,6 +398,15 @@ type Config struct {
 	// where the newest content is minimal and >85% of input is genuinely from cache.
 	PromptCacheMaxRatio float64 `json:"promptCacheMaxRatio,omitempty"`
 
+	// InputTokenMultiplier scales the reported input_tokens value sent to the
+	// downstream client. Default 1.0 (no scaling). Set > 1.0 to inflate the
+	// displayed input cost; set < 1.0 to deflate it.
+	InputTokenMultiplier float64 `json:"inputTokenMultiplier,omitempty"`
+
+	// CacheReadMultiplier scales the reported cache_read_input_tokens value sent
+	// to the downstream client. Default 1.0 (no scaling).
+	CacheReadMultiplier float64 `json:"cacheReadMultiplier,omitempty"`
+
 	// PromptCacheMaxEntries bounds the in-memory prompt-cache map; once exceeded,
 	// the least-recently-used entries are evicted (LRU). Default 131072. Sized so
 	// the prefix write-rate × TTL does not evict multi-turn history prefixes
@@ -1335,6 +1344,35 @@ func UpdatePromptCacheMaxRatio(ratio float64) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.PromptCacheMaxRatio = ratio
+	return Save()
+}
+
+// GetInputTokenMultiplier returns the input_tokens display multiplier (default 1.0).
+func GetInputTokenMultiplier() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.InputTokenMultiplier <= 0 {
+		return 1.0
+	}
+	return cfg.InputTokenMultiplier
+}
+
+// GetCacheReadMultiplier returns the cache_read_input_tokens display multiplier (default 1.0).
+func GetCacheReadMultiplier() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.CacheReadMultiplier <= 0 {
+		return 1.0
+	}
+	return cfg.CacheReadMultiplier
+}
+
+// UpdateTokenMultipliers sets both display multipliers and persists the change.
+func UpdateTokenMultipliers(inputMul, cacheReadMul float64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.InputTokenMultiplier = inputMul
+	cfg.CacheReadMultiplier = cacheReadMul
 	return Save()
 }
 

@@ -1542,6 +1542,10 @@
     if (maxPayloadEl) maxPayloadEl.value = String(d.maxPayloadBytes || 2000000);
     const cacheMaxRatioEl = document.getElementById('cacheMaxRatio');
     if (cacheMaxRatioEl) cacheMaxRatioEl.value = String(Math.round((d.promptCacheMaxRatio || 0.85) * 100));
+    const inputMulEl = document.getElementById('inputTokenMultiplier');
+    if (inputMulEl) inputMulEl.value = String(d.inputTokenMultiplier || 1);
+    const cacheReadMulEl = document.getElementById('cacheReadMultiplier');
+    if (cacheReadMulEl) cacheReadMulEl.value = String(d.cacheReadMultiplier || 1);
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1651,7 +1655,11 @@
     const maxPayloadBytes = maxPayloadEl ? parseInt(maxPayloadEl.value || '0', 10) : 0;
     const cacheMaxRatioEl = document.getElementById('cacheMaxRatio');
     const promptCacheMaxRatio = cacheMaxRatioEl ? Math.max(0, Math.min(99, parseInt(cacheMaxRatioEl.value || '85', 10))) / 100 : 0.85;
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio }) });
+    const inputMulEl = document.getElementById('inputTokenMultiplier');
+    const inputTokenMultiplier = inputMulEl ? parseFloat(inputMulEl.value || '1') : 1;
+    const cacheReadMulEl = document.getElementById('cacheReadMultiplier');
+    const cacheReadMultiplier = cacheReadMulEl ? parseFloat(cacheReadMulEl.value || '1') : 1;
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio, inputTokenMultiplier, cacheReadMultiplier }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {
