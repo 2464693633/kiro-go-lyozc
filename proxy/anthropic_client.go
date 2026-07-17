@@ -8,6 +8,7 @@ import (
 	"io"
 	"kiro-go/config"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -25,6 +26,61 @@ func anthropicBaseURL(account *config.Account) string {
 		return strings.TrimRight(strings.TrimSpace(account.BaseURL), "/")
 	}
 	return anthropicAPIBase
+}
+
+// versionDotPattern matches version numbers in dot notation (e.g. "4.6").
+var versionDotPattern = regexp.MustCompile(`(\d+)\.(\d+)`)
+
+// anthropicModelName reverses the Kiro model name normalization
+// (claude-opus-4.6 → claude-opus-4-6) so third-party Anthropic-compatible
+// relay services receive the hyphen format they expect.
+func anthropicModelName(model string) string {
+	return versionDotPattern.ReplaceAllString(model, "$1-$2")
+}
+
+// ListAnthropicModels fetches the available model list from the Anthropic
+// (or compatible relay) /v1/models endpoint and returns them as ModelInfo
+// entries. The model IDs are returned as-is (no normalization) so the proxy
+// can route requests without rewriting the client's model name.
+func ListAnthropicModels(account *config.Account) ([]ModelInfo, error) {
+	url := anthropicBaseURL(account) + "/v1/models"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-api-key", account.AccessToken)
+	req.Header.Set("anthropic-version", anthropicVersion)
+
+	client := GetRestClientForProxy(ResolveAccountProxyURL(account))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode models response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, ModelInfo{
+			ModelId:   m.ID,
+			ModelName: m.DisplayName,
+		})
+	}
+	return models, nil
 }
 
 // callAnthropicAPI sends a serialized ClaudeRequest to api.anthropic.com and

@@ -595,13 +595,18 @@ func (h *Handler) refreshModelsCache() {
 			continue
 		}
 
-		models, err := ListAvailableModels(account)
+		var models []ModelInfo
+		var err error
+		if account.IsAnthropicAccount() {
+			models, err = ListAnthropicModels(account)
+		} else {
+			models, err = ListAvailableModels(account)
+		}
 		if err != nil {
 			logger.Warnf("[ModelsCache] Failed to refresh for %s: %v", account.Email, err)
 			h.handleAccountFailure(account, err)
 			continue
 		}
-		// 缓存每账号可用模型，用于路由时过滤
 		modelIDs := make([]string, 0, len(models))
 		for _, m := range models {
 			modelIDs = append(modelIDs, m.ModelId)
@@ -625,7 +630,13 @@ func (h *Handler) fetchAndCacheAccountModels(account *config.Account) error {
 	if err := h.ensureValidToken(account); err != nil {
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
-	models, err := ListAvailableModels(account)
+	var models []ModelInfo
+	var err error
+	if account.IsAnthropicAccount() {
+		models, err = ListAnthropicModels(account)
+	} else {
+		models, err = ListAvailableModels(account)
+	}
 	if err != nil {
 		return err
 	}
@@ -1289,7 +1300,9 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 
 		var err error
 		if account.IsAnthropicAccount() {
-			reqBody, _ := json.Marshal(claudeReq)
+			anthropicReq := *claudeReq
+			anthropicReq.Model = anthropicModelName(claudeReq.Model)
+			reqBody, _ := json.Marshal(&anthropicReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
 			err = CallKiroAPI(account, payload, callback)
@@ -1629,7 +1642,9 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 
 		var err error
 		if account.IsAnthropicAccount() {
-			reqBody, _ := json.Marshal(claudeReq)
+			anthropicReq := *claudeReq
+			anthropicReq.Model = anthropicModelName(claudeReq.Model)
+			reqBody, _ := json.Marshal(&anthropicReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
 			err = CallKiroAPI(account, payload, callback)
@@ -2149,6 +2164,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		var err error
 		if account.IsAnthropicAccount() {
 			claudeReq := openAIToClaudeRequest(openAIReq, thinking, thinkingSuffix)
+			claudeReq.Model = anthropicModelName(claudeReq.Model)
 			reqBody, _ := json.Marshal(claudeReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
@@ -2323,6 +2339,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		var err error
 		if account.IsAnthropicAccount() {
 			claudeReq := openAIToClaudeRequest(openAIReq, thinking, thinkingSuffix)
+			claudeReq.Model = anthropicModelName(claudeReq.Model)
 			reqBody, _ := json.Marshal(claudeReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
