@@ -527,6 +527,8 @@
   "logs.output": "output",
   "logs.cacheRead": "cache_read",
   "logs.cacheCreation": "cache_creation",
+  "settings.realCostMultiplier": "上游真实费用倍数",
+  "settings.realCostMultiplierHint": "日志中上游真实价格乘以该系数显示。>1 可模拟含加价的账单，默认 1。",
   "errors.typeQuota": "配额",
   "errors.typeAuth": "认证",
   "errors.typeSuspended": "封禁",

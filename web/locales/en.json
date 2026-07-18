@@ -527,6 +527,8 @@
   "logs.output": "output",
   "logs.cacheRead": "cache_read",
   "logs.cacheCreation": "cache_creation",
+  "settings.realCostMultiplier": "Real cost multiplier",
+  "settings.realCostMultiplierHint": "Multiplies the real upstream cost displayed in logs. >1 simulates a marked-up bill. Default 1.",
   "errors.typeQuota": "Quota",
   "errors.typeAuth": "Auth",
   "errors.typeSuspended": "Suspended",

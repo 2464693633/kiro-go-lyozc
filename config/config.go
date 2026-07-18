@@ -413,6 +413,11 @@ type Config struct {
 	// to the downstream client. Default 1.0 (no scaling).
 	CacheReadMultiplier float64 `json:"cacheReadMultiplier,omitempty"`
 
+	// RealCostMultiplier scales the calculated real upstream cost shown in the
+	// admin request log. Default 1.0. Set > 1.0 to inflate the displayed real
+	// cost (e.g. to reflect overhead, margins, or a billing markup).
+	RealCostMultiplier float64 `json:"realCostMultiplier,omitempty"`
+
 	// PromptCacheMaxEntries bounds the in-memory prompt-cache map; once exceeded,
 	// the least-recently-used entries are evicted (LRU). Default 131072. Sized so
 	// the prefix write-rate × TTL does not evict multi-turn history prefixes
@@ -1400,6 +1405,24 @@ func UpdateTokenMultipliers(inputMul, cacheReadMul float64) error {
 	defer cfgLock.Unlock()
 	cfg.InputTokenMultiplier = inputMul
 	cfg.CacheReadMultiplier = cacheReadMul
+	return Save()
+}
+
+// GetRealCostMultiplier returns the real-cost display multiplier (default 1.0).
+func GetRealCostMultiplier() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.RealCostMultiplier <= 0 {
+		return 1.0
+	}
+	return cfg.RealCostMultiplier
+}
+
+// UpdateRealCostMultiplier sets the real-cost display multiplier and persists it.
+func UpdateRealCostMultiplier(mul float64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.RealCostMultiplier = mul
 	return Save()
 }
 

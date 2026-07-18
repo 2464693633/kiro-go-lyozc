@@ -719,6 +719,44 @@
     }
   }
 
+  // Model price table (USD per 1M tokens). Keys are lowercase substrings matched
+  // against the model name. First match wins, order matters (more specific first).
+  // Prices: input / output / cache_creation / cache_read
+  const MODEL_PRICES = [
+    { key: 'claude-opus-4',    input: 15,   output: 75,   creation: 18.75, read: 1.50 },
+    { key: 'claude-sonnet-4',  input: 3,    output: 15,   creation: 3.75,  read: 0.30 },
+    { key: 'claude-haiku-4',   input: 0.8,  output: 4,    creation: 1.0,   read: 0.08 },
+    { key: 'claude-opus-3',    input: 15,   output: 75,   creation: 18.75, read: 1.50 },
+    { key: 'claude-sonnet-3',  input: 3,    output: 15,   creation: 3.75,  read: 0.30 },
+    { key: 'claude-haiku-3',   input: 0.25, output: 1.25, creation: 0.3,   read: 0.03 },
+    { key: 'claude',           input: 3,    output: 15,   creation: 3.75,  read: 0.30 },
+  ];
+
+  function getModelPrice(model) {
+    if (!model) return null;
+    const m = model.toLowerCase();
+    for (const p of MODEL_PRICES) {
+      if (m.includes(p.key)) return p;
+    }
+    return null;
+  }
+
+  // Compute cost in USD. tokens in raw count, price per million.
+  function calcCost(inputTok, outputTok, cacheRead, cacheCreation, price) {
+    if (!price) return null;
+    const M = 1e6;
+    return ((inputTok || 0) * price.input +
+            (outputTok || 0) * price.output +
+            (cacheRead || 0) * price.read +
+            (cacheCreation || 0) * price.creation) / M;
+  }
+
+  function fmtUSD(v) {
+    if (v === null || v === undefined) return '-';
+    if (v < 0.0001) return '< $0.0001';
+    return '$' + v.toFixed(4);
+  }
+
   function renderLogs(logs) {
     logsCache = logs;
     const list = $('logsList');
@@ -751,6 +789,7 @@
       '<th>' + escapeHtml(t('logs.duration')) + '</th>' +
       '<th>' + escapeHtml(t('logs.detail')) + '</th>' +
       '</tr></thead><tbody>';
+    const realCostMul = parseFloat((document.getElementById('realCostMultiplier') || {}).value || '1') || 1;
     for (const l of filtered) {
       const isErr = l.status === 'error';
       const statusCell = '<span class="log-status log-status--' + escapeAttr(l.status) + '">' +
@@ -763,19 +802,24 @@
       } else {
         detailCell = '<span class="text-muted">' + (l.credits ? (l.credits.toFixed(3) + ' cr') : '-') + '</span>';
       }
-      // Real upstream tokens
+      const price = getModelPrice(l.model);
+      // Real upstream tokens + cost
+      const realCost = price ? calcCost(l.realInput, l.realOutput, 0, 0, price) * realCostMul : null;
       const realCell = (l.realInput || l.realOutput)
         ? '<span class="token-line">' + t('logs.input') + ':' + formatNum(l.realInput || 0) +
-          ' ' + t('logs.output') + ':' + formatNum(l.realOutput || 0) + '</span>'
+          ' ' + t('logs.output') + ':' + formatNum(l.realOutput || 0) + '</span>' +
+          '<span class="token-line token-cost">' + fmtUSD(realCost) + '</span>'
         : (l.tokens ? formatNum(l.tokens) : '-');
-      // Simulated tokens sent to client
+      // Simulated tokens sent to client + cost
       const hasSim = l.simInput || l.simCacheRead || l.simCacheCreation;
+      const simCost = (hasSim && price) ? calcCost(l.simInput, l.simOutput, l.simCacheRead, l.simCacheCreation, price) : null;
       const simCell = hasSim
         ? '<span class="token-line">' + t('logs.input') + ':' + formatNum(l.simInput || 0) +
           ' ' + t('logs.output') + ':' + formatNum(l.simOutput || 0) + '</span>' +
           '<span class="token-line text-muted">' +
           t('logs.cacheRead') + ':' + formatNum(l.simCacheRead || 0) +
-          ' ' + t('logs.cacheCreation') + ':' + formatNum(l.simCacheCreation || 0) + '</span>'
+          ' ' + t('logs.cacheCreation') + ':' + formatNum(l.simCacheCreation || 0) + '</span>' +
+          '<span class="token-line token-cost">' + fmtUSD(simCost) + '</span>'
         : '-';
       html += '<tr>' +
         '<td>' + escapeHtml(formatLogTime(l.time)) + '</td>' +
@@ -1564,6 +1608,8 @@
     if (cacheReadMulEl) cacheReadMulEl.value = String(d.cacheReadMultiplier || 1);
     const cacheTTLEl = document.getElementById('promptCacheTTLSeconds');
     if (cacheTTLEl) cacheTTLEl.value = String(d.promptCacheTTLSeconds || 300);
+    const realCostMulEl = document.getElementById('realCostMultiplier');
+    if (realCostMulEl) realCostMulEl.value = String(d.realCostMultiplier || 1);
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1679,7 +1725,9 @@
     const cacheReadMultiplier = cacheReadMulEl ? parseFloat(cacheReadMulEl.value || '1') : 1;
     const cacheTTLEl = document.getElementById('promptCacheTTLSeconds');
     const promptCacheTTLSeconds = cacheTTLEl ? Math.max(30, Math.min(3600, parseInt(cacheTTLEl.value || '300', 10))) : 300;
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio, inputTokenMultiplier, cacheReadMultiplier, promptCacheTTLSeconds }) });
+    const realCostMulEl = document.getElementById('realCostMultiplier');
+    const realCostMultiplier = realCostMulEl ? parseFloat(realCostMulEl.value || '1') : 1;
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio, inputTokenMultiplier, cacheReadMultiplier, promptCacheTTLSeconds, realCostMultiplier }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {
