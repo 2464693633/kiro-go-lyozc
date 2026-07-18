@@ -279,6 +279,8 @@
   "settings.inputTokenMultiplierHint": "对返回给客户端的 input_tokens 乘以该系数。>1 放大（显示更多消耗），<1 缩小，1 为原值（默认）。",
   "settings.cacheReadMultiplier": "cache_read token 倍数",
   "settings.cacheReadMultiplierHint": "对返回给客户端的 cache_read_input_tokens 乘以该系数。>1 放大，<1 缩小，1 为原值（默认）。",
+  "settings.cacheBypassRate": "强制创建缓存概率（%）",
+  "settings.cacheBypassRateHint": "0~100 的整数。命中本地缓存时有该概率强制转为 cache_creation（$3.75/MTok，比普通 input 还贵），增加客户端显示的创建缓存消耗。0 = 关闭（默认），100 = 每次都强制创建。",
   "builderid.startLogin": "开始登录",
   "builderid.verifyCode": "请在浏览器中输入上方验证码",
   "builderid.verifyUrl": "验证链接",

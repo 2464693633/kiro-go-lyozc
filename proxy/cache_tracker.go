@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"kiro-go/config"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -420,6 +421,17 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 		}
 		entry, ok := t.entries[breakpoint.Fingerprint]
 		if !ok || entry.ExpiresAt.Before(now) {
+			continue
+		}
+		// Forced-miss injection: with probability CacheBypassRate, treat this
+		// otherwise-valid hit as a miss so the tokens are billed as the more
+		// expensive cache_creation ($3.75/MTok) instead of cache_read
+		// ($0.30/MTok). The entry's TTL is still refreshed so future turns can
+		// hit it. Default rate 0 = original behaviour (no bypass).
+		if bypass := config.GetCacheBypassRate(); bypass > 0 && rand.Float64() < bypass {
+			entry.ExpiresAt = now.Add(entry.TTL)
+			t.order.MoveToFront(entry.lruElem)
+			t.dirty = true
 			continue
 		}
 		entry.ExpiresAt = now.Add(entry.TTL)

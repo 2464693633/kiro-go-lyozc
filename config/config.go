@@ -394,9 +394,13 @@ type Config struct {
 	LogLevel string `json:"logLevel,omitempty"`
 
 	// PromptCacheMaxRatio caps the fraction of input tokens reported as cache_read
-	// in a single turn. Default 0.85. Raise to 0.95 for "continue"-heavy workloads
-	// where the newest content is minimal and >85% of input is genuinely from cache.
+	// in a single turn. Default 0.85.
 	PromptCacheMaxRatio float64 `json:"promptCacheMaxRatio,omitempty"`
+
+	// CacheBypassRate is the probability (0.0–1.0) that a cache hit is forcibly
+	// converted to cache_creation. 0 = never bypass (default), 1 = always bypass.
+	// Set > 0 to increase reported cache_creation at the expense of cache_read.
+	CacheBypassRate float64 `json:"cacheBypassRate,omitempty"`
 
 	// InputTokenMultiplier scales the reported input_tokens value sent to the
 	// downstream client. Default 1.0 (no scaling). Set > 1.0 to inflate the
@@ -1344,6 +1348,25 @@ func UpdatePromptCacheMaxRatio(ratio float64) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.PromptCacheMaxRatio = ratio
+	return Save()
+}
+
+// GetCacheBypassRate returns the probability (0.0–1.0) that a cache hit is
+// forcibly converted to cache_creation. Defaults to 0 (never bypass).
+func GetCacheBypassRate() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.CacheBypassRate < 0 || cfg.CacheBypassRate > 1 {
+		return 0
+	}
+	return cfg.CacheBypassRate
+}
+
+// UpdateCacheBypassRate sets the cache-bypass probability and persists the change.
+func UpdateCacheBypassRate(rate float64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.CacheBypassRate = rate
 	return Save()
 }
 

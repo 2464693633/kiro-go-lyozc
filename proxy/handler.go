@@ -3810,6 +3810,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"promptCacheMaxRatio":  config.GetPromptCacheMaxRatio(),
 		"inputTokenMultiplier": config.GetInputTokenMultiplier(),
 		"cacheReadMultiplier":  config.GetCacheReadMultiplier(),
+		"cacheBypassRate":      config.GetCacheBypassRate(),
 	})
 }
 
@@ -3866,6 +3867,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		PromptCacheMaxRatio  *float64 `json:"promptCacheMaxRatio,omitempty"`
 		InputTokenMultiplier *float64 `json:"inputTokenMultiplier,omitempty"`
 		CacheReadMultiplier  *float64 `json:"cacheReadMultiplier,omitempty"`
+		CacheBypassRate      *float64 `json:"cacheBypassRate,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3927,6 +3929,20 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := config.UpdateTokenMultipliers(inputMul, cacheReadMul); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.CacheBypassRate != nil {
+		rate := *req.CacheBypassRate
+		if rate < 0 || rate > 1 {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "cacheBypassRate must be between 0 and 1"})
+			return
+		}
+		if err := config.UpdateCacheBypassRate(rate); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
