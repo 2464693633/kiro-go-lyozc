@@ -397,10 +397,12 @@ type Config struct {
 	// in a single turn. Default 0.85.
 	PromptCacheMaxRatio float64 `json:"promptCacheMaxRatio,omitempty"`
 
-	// CacheBypassRate is the probability (0.0–1.0) that a cache hit is forcibly
-	// converted to cache_creation. 0 = never bypass (default), 1 = always bypass.
-	// Set > 0 to increase reported cache_creation at the expense of cache_read.
-	CacheBypassRate float64 `json:"cacheBypassRate,omitempty"`
+	// PromptCacheTTLSeconds is the effective cache lifetime for stored prefixes.
+	// Default 300 (5 min, matching Anthropic's default). Shorter values make
+	// history prefixes expire sooner, so the next turn is deterministically
+	// re-billed as cache_creation instead of cache_read. Caps the per-breakpoint
+	// TTL derived from cache_control, so a smaller value always wins.
+	PromptCacheTTLSeconds int `json:"promptCacheTTLSeconds,omitempty"`
 
 	// InputTokenMultiplier scales the reported input_tokens value sent to the
 	// downstream client. Default 1.0 (no scaling). Set > 1.0 to inflate the
@@ -1351,22 +1353,24 @@ func UpdatePromptCacheMaxRatio(ratio float64) error {
 	return Save()
 }
 
-// GetCacheBypassRate returns the probability (0.0–1.0) that a cache hit is
-// forcibly converted to cache_creation. Defaults to 0 (never bypass).
-func GetCacheBypassRate() float64 {
+// GetPromptCacheTTLSeconds returns the prompt-cache entry lifetime in seconds.
+// Defaults to 300 (5 minutes, matching Anthropic's default). Shorter values
+// make history prefixes expire sooner, so more turns are re-billed as
+// cache_creation instead of cache_read.
+func GetPromptCacheTTLSeconds() int {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()
-	if cfg == nil || cfg.CacheBypassRate < 0 || cfg.CacheBypassRate > 1 {
-		return 0
+	if cfg == nil || cfg.PromptCacheTTLSeconds <= 0 {
+		return 300
 	}
-	return cfg.CacheBypassRate
+	return cfg.PromptCacheTTLSeconds
 }
 
-// UpdateCacheBypassRate sets the cache-bypass probability and persists the change.
-func UpdateCacheBypassRate(rate float64) error {
+// UpdatePromptCacheTTLSeconds sets the prompt-cache TTL (seconds) and persists it.
+func UpdatePromptCacheTTLSeconds(sec int) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
-	cfg.CacheBypassRate = rate
+	cfg.PromptCacheTTLSeconds = sec
 	return Save()
 }
 

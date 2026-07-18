@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"kiro-go/config"
 	"math"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -321,6 +320,13 @@ func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTo
 	// breakpoints fire even with no explicit cache_control (see detectMaxTTL).
 	activeTTL := detectMaxTTL(req)
 
+	// Mechanism A: operator-configurable cache TTL. Every breakpoint's TTL is
+	// converged down to this cap, so a shorter setting makes history prefixes
+	// expire sooner → the next turn re-reports them as cache_creation. This is
+	// deterministic (past TTL = miss) and mirrors Anthropic's real cache expiry.
+	// Default 300s keeps the pre-existing 5-minute behaviour.
+	effectiveTTL := time.Duration(config.GetPromptCacheTTLSeconds()) * time.Second
+
 	for _, block := range blocks {
 		canonical := canonicalizeCacheValue(block.Value)
 		writeHashChunk(hasher, canonical)
@@ -342,6 +348,9 @@ func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTo
 		if breakpointTTL <= 0 {
 			continue
 		}
+
+		// Converge to the operator TTL cap (Mechanism A).
+		breakpointTTL = minDuration(breakpointTTL, effectiveTTL)
 
 		var fingerprint [32]byte
 		copy(fingerprint[:], hasher.Sum(nil))
@@ -412,8 +421,22 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 		lastTokens = maxCacheable
 	}
 
+	// Mechanism B (deterministic per-turn creation): the deepest breakpoint
+	// (index len-1) covers this turn's newest content, which Anthropic always
+	// bills as cache_creation on the turn it first appears — never cache_read.
+	// So when there are ≥2 breakpoints we start matching from len-2, letting
+	// matchedTokens come from the previous turn's stable prefix and leaving this
+	// turn's increment (lastTokens - matchedTokens) as creation. With a single
+	// breakpoint there is no prior prefix to read, so behaviour is unchanged.
+	// This mirrors real prompt-cache semantics (stable prefix = read, new turn
+	// increment = creation) deterministically, with no randomness.
+	scanStart := len(profile.Breakpoints) - 1
+	if len(profile.Breakpoints) >= 2 {
+		scanStart = len(profile.Breakpoints) - 2
+	}
+
 	matchedTokens := 0
-	for i := len(profile.Breakpoints) - 1; i >= 0; i-- {
+	for i := scanStart; i >= 0; i-- {
 		breakpoint := profile.Breakpoints[i]
 		// Skip breakpoints below the minimum cacheable token threshold.
 		if breakpoint.CumulativeTokens < minTokens {
@@ -421,17 +444,6 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 		}
 		entry, ok := t.entries[breakpoint.Fingerprint]
 		if !ok || entry.ExpiresAt.Before(now) {
-			continue
-		}
-		// Forced-miss injection: with probability CacheBypassRate, treat this
-		// otherwise-valid hit as a miss so the tokens are billed as the more
-		// expensive cache_creation ($3.75/MTok) instead of cache_read
-		// ($0.30/MTok). The entry's TTL is still refreshed so future turns can
-		// hit it. Default rate 0 = original behaviour (no bypass).
-		if bypass := config.GetCacheBypassRate(); bypass > 0 && rand.Float64() < bypass {
-			entry.ExpiresAt = now.Add(entry.TTL)
-			t.order.MoveToFront(entry.lruElem)
-			t.dirty = true
 			continue
 		}
 		entry.ExpiresAt = now.Add(entry.TTL)
@@ -1019,6 +1031,16 @@ func minInt(a, b int) int {
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+// minDuration returns the smaller of two durations. Used to converge a
+// breakpoint's TTL down to the operator-configured cache lifetime so shorter
+// TTLs expire history prefixes sooner (driving more cache_creation).
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
 		return a
 	}
 	return b

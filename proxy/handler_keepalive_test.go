@@ -143,7 +143,7 @@ func TestClaudeStreamEmitsKeepaliveDuringUpstreamStall(t *testing.T) {
 
 	model := "claude-opus-4-8"
 	rec := newLockedFlushRecorder()
-	h.handleClaudeStream(rec, keepaliveTestPayload(model), model, false, claudeThinkingResponseOptions{}, 1000, nil, "")
+	h.handleClaudeStream(rec, keepaliveTestPayload(model), nil, model, false, claudeThinkingResponseOptions{}, 1000, nil, "")
 
 	body := rec.body()
 	if !strings.Contains(body, ": keepalive") {
@@ -186,7 +186,7 @@ func TestOpenAIStreamEmitsKeepaliveDuringUpstreamStall(t *testing.T) {
 
 	model := "claude-opus-4-8"
 	rec := newLockedFlushRecorder()
-	h.handleOpenAIStream(rec, keepaliveTestPayload(model), model, false, 1000, "")
+	h.handleOpenAIStream(rec, keepaliveTestPayload(model), nil, "", model, false, 1000, "")
 
 	body := rec.body()
 	if !strings.Contains(body, ": keepalive") {
