@@ -196,7 +196,7 @@
   "detail.saveFailed": "保存失败",
   "detail.generateFailed": "生成失败",
   "detail.weight": "请求权重",
-  "detail.weightHint": "0-1=普通, 2+=高优先级",
+  "detail.weightHint": "严格优先级分层：数值越高越优先。只有当同一优先级的账号全部不可用（冷却/失效/额度耗尽）时，才会降级使用更低数值的账号。例如给 Kiro 账号设较高值、上游 API 设较低值，即可实现优先用账号、账号用不了再切上游。同级内部按负载均衡分配。",
   "detail.overage": "超额调用（Overages）",
   "detail.overageHint": "点击开关将调用 AWS Q setUserPreference，立即在 Kiro 后台开/关 Overages",
   "detail.overageStatus": "当前状态",

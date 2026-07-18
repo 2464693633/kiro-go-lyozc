@@ -64,6 +64,7 @@ type accountRuntimeStats struct {
 // the smart scheduler compares (accountCandidateLess).
 type accountCandidate struct {
 	account             *config.Account
+	weight              int
 	inFlight            int64
 	recentFailureCount  int64
 	recentSelectedCount int64
@@ -116,6 +117,7 @@ func (p *AccountPool) accountCandidateLocked(acc *config.Account, now time.Time)
 	stats := p.statsForAccountLocked(acc.ID, now)
 	return accountCandidate{
 		account:             acc,
+		weight:              effectiveWeight(acc.Weight),
 		inFlight:            stats.inFlight,
 		recentFailureCount:  stats.recentFailureCount,
 		recentSelectedCount: stats.recentSelectedCount,
@@ -229,9 +231,33 @@ func (p *AccountPool) selectAccountLocked(model string, excluded map[string]bool
 		return selected
 	}
 
-	// Fallback: no account passed all hard filters (all cooling down). Return the
-	// eligible account (model + quota OK, not excluded) with the earliest cooldown
-	// so the caller still gets capacity rather than a hard 503.
+	// Fallback: no account passed all hard filters (all cooling down). Return an
+	// eligible account (model + quota OK, not excluded) rather than a hard 503.
+	// Priority tiering is preserved here too: we only consider accounts in the
+	// highest-weight tier that has any eligible account, so a low-priority
+	// upstream is never picked while a higher-priority account is merely cooling
+	// down (it will recover). Within the chosen tier, an account with no cooldown
+	// wins; otherwise the earliest-recovering one.
+	fallbackMaxWeight := -1
+	for i := range p.accounts {
+		acc := &p.accounts[i]
+		if excluded != nil && excluded[acc.ID] {
+			continue
+		}
+		if requireModel && !p.accountHasModel(acc.ID, model) {
+			continue
+		}
+		if isQuotaBlocked(*acc, allowOverUsage) {
+			continue
+		}
+		if w := effectiveWeight(acc.Weight); w > fallbackMaxWeight {
+			fallbackMaxWeight = w
+		}
+	}
+	if fallbackMaxWeight < 0 {
+		return nil // no eligible account in any tier
+	}
+
 	var best *config.Account
 	var earliest time.Time
 	for i := range p.accounts {
@@ -243,6 +269,10 @@ func (p *AccountPool) selectAccountLocked(model string, excluded map[string]bool
 			continue
 		}
 		if isQuotaBlocked(*acc, allowOverUsage) {
+			continue
+		}
+		// Only consider the highest-priority tier with eligible accounts.
+		if effectiveWeight(acc.Weight) != fallbackMaxWeight {
 			continue
 		}
 		if cooldown, ok := p.cooldowns[acc.ID]; ok {
@@ -263,13 +293,42 @@ func (p *AccountPool) selectAccountLocked(model string, excluded map[string]bool
 	return nil
 }
 
-// bestCandidateLocked applies the concurrency cap, picks one candidate via the
-// configured strategy, marks it selected (in-flight++), and returns a value
-// copy. Returns nil when candidates is empty.
+// highestPriorityCandidates returns only the candidates whose effective weight
+// equals the maximum weight present in the input. Weight is used as a strict
+// priority tier: higher weight = higher priority. All requests are served from
+// the highest tier that still has an eligible account; only when the entire top
+// tier is unavailable (cooling down / token expired / quota blocked — filtered
+// out upstream in selectAccountLocked) do lower-weight accounts appear as
+// candidates and get selected. This makes "prefer Kiro accounts, fall back to
+// the Anthropic upstream" configurable by giving Kiro accounts a higher weight.
+// Within the selected tier the smart health/load scheduler still balances load.
+func highestPriorityCandidates(candidates []accountCandidate) []accountCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	maxWeight := effectiveWeight(candidates[0].weight)
+	for _, c := range candidates[1:] {
+		if w := effectiveWeight(c.weight); w > maxWeight {
+			maxWeight = w
+		}
+	}
+	top := make([]accountCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		if effectiveWeight(c.weight) == maxWeight {
+			top = append(top, c)
+		}
+	}
+	return top
+}
+
+// bestCandidateLocked applies the priority-tier filter and concurrency cap,
+// picks one candidate via the configured strategy, marks it selected
+// (in-flight++), and returns a value copy. Returns nil when candidates is empty.
 func (p *AccountPool) bestCandidateLocked(candidates []accountCandidate, now time.Time) *config.Account {
 	if len(candidates) == 0 {
 		return nil
 	}
+	candidates = highestPriorityCandidates(candidates)
 	candidates = applyConcurrencyCap(candidates)
 	best := selectCandidate(candidates)
 	p.markAccountSelectedLocked(best.account.ID, now)

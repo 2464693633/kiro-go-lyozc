@@ -196,7 +196,7 @@
   "detail.saveFailed": "Save failed",
   "detail.generateFailed": "Generate failed",
   "detail.weight": "Request Weight",
-  "detail.weightHint": "0-1 = normal, 2+ = higher priority",
+  "detail.weightHint": "Strict priority tier: higher value = higher priority. Lower-value accounts are used only when every account in a higher tier is unavailable (cooling down / expired / quota exhausted). E.g. give Kiro accounts a higher value and the upstream API a lower one to prefer accounts first and fall back to the upstream. Within the same tier, load is balanced.",
   "detail.overage": "Overages (Upstream)",
   "detail.overageHint": "Toggling calls AWS Q setUserPreference and flips Overages in your Kiro account immediately",
   "detail.overageStatus": "Current status",
