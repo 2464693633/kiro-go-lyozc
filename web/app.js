@@ -746,7 +746,8 @@
       '<th>' + escapeHtml(t('logs.endpoint')) + '</th>' +
       '<th>' + escapeHtml(t('logs.model')) + '</th>' +
       '<th>' + escapeHtml(t('logs.account')) + '</th>' +
-      '<th>' + escapeHtml(t('logs.tokens')) + '</th>' +
+      '<th>' + escapeHtml(t('logs.realTokens')) + '</th>' +
+      '<th>' + escapeHtml(t('logs.simTokens')) + '</th>' +
       '<th>' + escapeHtml(t('logs.duration')) + '</th>' +
       '<th>' + escapeHtml(t('logs.detail')) + '</th>' +
       '</tr></thead><tbody>';
@@ -762,13 +763,28 @@
       } else {
         detailCell = '<span class="text-muted">' + (l.credits ? (l.credits.toFixed(3) + ' cr') : '-') + '</span>';
       }
+      // Real upstream tokens
+      const realCell = (l.realInput || l.realOutput)
+        ? '<span class="token-line">' + t('logs.input') + ':' + formatNum(l.realInput || 0) +
+          ' ' + t('logs.output') + ':' + formatNum(l.realOutput || 0) + '</span>'
+        : (l.tokens ? formatNum(l.tokens) : '-');
+      // Simulated tokens sent to client
+      const hasSim = l.simInput || l.simCacheRead || l.simCacheCreation;
+      const simCell = hasSim
+        ? '<span class="token-line">' + t('logs.input') + ':' + formatNum(l.simInput || 0) +
+          ' ' + t('logs.output') + ':' + formatNum(l.simOutput || 0) + '</span>' +
+          '<span class="token-line text-muted">' +
+          t('logs.cacheRead') + ':' + formatNum(l.simCacheRead || 0) +
+          ' ' + t('logs.cacheCreation') + ':' + formatNum(l.simCacheCreation || 0) + '</span>'
+        : '-';
       html += '<tr>' +
         '<td>' + escapeHtml(formatLogTime(l.time)) + '</td>' +
         '<td>' + statusCell + '</td>' +
         '<td>' + escapeHtml(l.endpoint) + '</td>' +
         '<td>' + escapeHtml(l.model || '-') + '</td>' +
         '<td>' + escapeHtml(accountLabel(l.accountId)) + '</td>' +
-        '<td>' + (l.tokens ? formatNum(l.tokens) : '-') + '</td>' +
+        '<td>' + realCell + '</td>' +
+        '<td>' + simCell + '</td>' +
         '<td>' + (l.duration ? (l.duration + 'ms') : '-') + '</td>' +
         '<td>' + detailCell + '</td>' +
         '</tr>';

@@ -33,6 +33,14 @@ type RequestLog struct {
 	Tokens    int     `json:"tokens"`    // Total tokens (input+output, 0 on failure)
 	Credits   float64 `json:"credits"`   // Credits consumed (0 on failure)
 	Duration  int64   `json:"duration"`  // Request duration in ms
+	// Real upstream token breakdown (before any multiplier/bypass adjustment)
+	RealInput    int `json:"realInput"`    // Raw input_tokens from upstream
+	RealOutput   int `json:"realOutput"`   // Raw output_tokens from upstream
+	// Simulated token breakdown reported to the downstream client
+	SimInput         int `json:"simInput"`         // client input_tokens (after multiplier)
+	SimOutput        int `json:"simOutput"`         // client output_tokens
+	SimCacheRead     int `json:"simCacheRead"`      // client cache_read_input_tokens
+	SimCacheCreation int `json:"simCacheCreation"`  // client cache_creation_input_tokens
 }
 
 const requestLogsMaxSize = 500
@@ -1367,7 +1375,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), inputTokens, outputTokens, cacheUsage)
 		recordClaudeCacheDispatch("success", model, "stream", account, cacheUsage, inputTokens, outputTokens)
 
 		stopReason := "end_turn"
@@ -1526,16 +1534,26 @@ func (h *Handler) recordFailureWithDetails(endpoint, model, accountID string, er
 }
 
 // recordSuccessLog records a successful request in the request logs.
-func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int, credits float64, durationMs int64) {
+func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int, credits float64, durationMs int64, realInput, realOutput int, simUsage promptCacheUsage) {
+	usageMap := buildClaudeUsageMap(realInput, realOutput, simUsage, true)
+	simInput, _ := usageMap["input_tokens"].(int)
+	simCacheRead, _ := usageMap["cache_read_input_tokens"].(int)
+	simCacheCreation, _ := usageMap["cache_creation_input_tokens"].(int)
 	entry := RequestLog{
-		Time:      time.Now().Unix(),
-		Endpoint:  endpoint,
-		Model:     model,
-		AccountID: accountID,
-		Status:    "success",
-		Tokens:    tokens,
-		Credits:   credits,
-		Duration:  durationMs,
+		Time:             time.Now().Unix(),
+		Endpoint:         endpoint,
+		Model:            model,
+		AccountID:        accountID,
+		Status:           "success",
+		Tokens:           tokens,
+		Credits:          credits,
+		Duration:         durationMs,
+		RealInput:        realInput,
+		RealOutput:       realOutput,
+		SimInput:         simInput,
+		SimOutput:        realOutput,
+		SimCacheRead:     simCacheRead,
+		SimCacheCreation: simCacheCreation,
 	}
 
 	h.appendRequestLog(entry)
@@ -1694,7 +1712,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), inputTokens, outputTokens, cacheUsage)
 		recordClaudeCacheDispatch("success", model, "nonstream", account, cacheUsage, inputTokens, outputTokens)
 
 		responseThinkingContent := rawThinkingContent
@@ -2216,7 +2234,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		//   branch off main. No-op here; stripped so handler compiles against main's
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), inputTokens, outputTokens, promptCacheUsage{})
 
 		finishReason := "stop"
 		if len(toolCalls) > 0 {
@@ -2377,7 +2395,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		//   branch off main. No-op here; stripped so handler compiles against main's
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), inputTokens, outputTokens, promptCacheUsage{})
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)
