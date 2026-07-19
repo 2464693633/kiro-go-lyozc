@@ -97,10 +97,6 @@ func callAnthropicAPI(account *config.Account, reqBody []byte, callback *KiroStr
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", account.AccessToken)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
-	// Enable extended thinking beta if the request carries a thinking config.
-	if meta.Thinking != nil {
-		httpReq.Header.Set("anthropic-beta", anthropicBetaHeader)
-	}
 	if meta.Stream {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	}

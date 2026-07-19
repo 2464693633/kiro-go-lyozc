@@ -139,6 +139,22 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	}
 
 	errMsg := err.Error()
+
+	// Anthropic/relay accounts: skip all Kiro-specific handling (overage REST
+	// call, profile-unavailable logic, AWS-specific ban reasons). Only apply
+	// generic permanent-rejection, auth disable, and quota/error scoring.
+	if account.IsAnthropicAccount() {
+		switch {
+		case isUpstreamPermanentError(err):
+			h.pool.RecordPermanentRejection(account.ID)
+		case isAuthErrorMessage(errMsg):
+			h.disableAccount(account, "BANNED", "Authentication failed - API key invalid or rejected")
+		default:
+			h.pool.RecordError(account.ID, isQuotaErrorMessage(errMsg))
+		}
+		return
+	}
+
 	switch {
 	case isUpstreamPermanentError(err):
 		// The request itself is malformed/rejected by the upstream regardless of
