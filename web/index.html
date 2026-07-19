@@ -109,6 +109,8 @@
                 data-i18n="tabs.api"></span></button>
             <button type="button" class="tab" data-tab="logs"><i class="fa-solid fa-list tab-icon"></i><span
                 data-i18n="tabs.logs"></span></button>
+            <button type="button" class="tab" data-tab="daily"><i class="fa-solid fa-chart-bar tab-icon"></i><span
+                data-i18n="tabs.daily"></span></button>
           </div>
         </nav>
         <div class="topbar-actions flex-wrap justify-end">
@@ -526,6 +528,17 @@
           </div>
           <p class="api-hint"><i class="fa-solid fa-key"></i><span data-i18n="api.statsHint"></span></p>
         </section>
+      </div>
+
+      <!-- Daily stats tab -->
+      <div id="tabDaily" class="tab-content hidden">
+        <div class="card">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <span class="card-title" data-i18n="daily.title"></span>
+            <button class="btn btn-outline btn-sm" id="dailyRefreshBtn"><i class="fa-solid fa-rotate"></i> <span data-i18n="logs.refresh"></span></button>
+          </div>
+          <div id="dailyContent"><p class="text-muted" data-i18n="daily.empty"></p></div>
+        </div>
       </div>
 
       <!-- Logs tab -->

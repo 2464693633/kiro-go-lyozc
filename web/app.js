@@ -708,6 +708,74 @@
     return id.slice(0, 8);
   }
 
+  }
+
+  async function loadDailyStats() {
+    const el = $('dailyContent');
+    if (!el) return;
+    try {
+      const res = await api('/daily-stats');
+      const days = await res.json();
+      renderDailyStats(days || []);
+    } catch (e) {
+      el.innerHTML = '<p class="text-muted">' + escapeHtml(t('daily.loadFailed')) + '</p>';
+    }
+  }
+
+  function renderDailyStats(days) {
+    const el = $('dailyContent');
+    if (!el) return;
+    if (!days || !days.length) {
+      el.innerHTML = '<p class="text-muted">' + escapeHtml(t('daily.empty')) + '</p>';
+      return;
+    }
+    let html = '';
+    for (const day of days) {
+      const models = Object.values(day.models || {});
+      if (!models.length) continue;
+      // Compute day totals
+      let totalRealCost = 0, totalSimCost = 0, totalReqs = 0;
+      for (const m of models) {
+        totalRealCost += m.realCostUSD || 0;
+        totalSimCost += m.simCostUSD || 0;
+        totalReqs += m.requests || 0;
+      }
+      html += '<div class="daily-day">' +
+        '<div class="daily-day-header">' +
+        '<strong>' + escapeHtml(day.date) + '</strong>' +
+        '<span class="daily-day-meta">' + escapeHtml(t('daily.requests')) + ': ' + formatNum(totalReqs) +
+        ' &nbsp; ' + t('daily.realCost') + ': <strong class="cost-real">' + fmtUSD(totalRealCost) + '</strong>' +
+        ' &nbsp; ' + t('daily.simCost') + ': <strong class="cost-sim">' + fmtUSD(totalSimCost) + '</strong>' +
+        '</span></div>';
+      html += '<table class="logs-table"><thead><tr>' +
+        '<th>' + escapeHtml(t('logs.model')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.requests')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.realInput')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.realOutput')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.realCost')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.simInput')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.simCacheRead')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.simCacheCreation')) + '</th>' +
+        '<th>' + escapeHtml(t('daily.simCost')) + '</th>' +
+        '</tr></thead><tbody>';
+      for (const m of models) {
+        html += '<tr>' +
+          '<td>' + escapeHtml(m.model || '-') + '</td>' +
+          '<td>' + formatNum(m.requests || 0) + '</td>' +
+          '<td>' + formatNum(m.realInput || 0) + '</td>' +
+          '<td>' + formatNum(m.realOutput || 0) + '</td>' +
+          '<td class="cost-real">' + fmtUSD(m.realCostUSD) + '</td>' +
+          '<td>' + formatNum(m.simInput || 0) + '</td>' +
+          '<td>' + formatNum(m.simCacheRead || 0) + '</td>' +
+          '<td>' + formatNum(m.simCacheCreation || 0) + '</td>' +
+          '<td class="cost-sim">' + fmtUSD(m.simCostUSD) + '</td>' +
+          '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+    el.innerHTML = html || '<p class="text-muted">' + escapeHtml(t('daily.empty')) + '</p>';
+  }
+
   async function loadLogs() {
     try {
       const res = await api('/logs');
@@ -3095,6 +3163,7 @@
     qsa('.tab-content').forEach(c => c.classList.add('hidden'));
     $('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.remove('hidden');
     if (tab === 'logs') loadLogs();
+    if (tab === 'daily') loadDailyStats();
   }
 
   // Event wiring
@@ -3162,6 +3231,9 @@
     if (logsClearBtn) logsClearBtn.addEventListener('click', clearLogs);
     const logsAuto = $('logsAutoRefresh');
     if (logsAuto) logsAuto.addEventListener('change', toggleLogsAutoRefresh);
+    // Daily stats tab
+    const dailyRefreshBtn = $('dailyRefreshBtn');
+    if (dailyRefreshBtn) dailyRefreshBtn.addEventListener('click', loadDailyStats);
     const logsFilterSel = $('logsFilterSelect');
     if (logsFilterSel) logsFilterSel.addEventListener('change', e => {
       logsFilter = e.target.value;

@@ -72,6 +72,9 @@ func main() {
 	proxy.InitAuditStore(filepath.Dir(configPath))
 	defer proxy.CloseAuditStore()
 
+	proxy.InitDailyStats(filepath.Dir(configPath))
+	defer proxy.CloseDailyStats()
+
 	// 创建 HTTP 处理器（包含后台刷新任务）
 	handler := proxy.NewHandler()
 

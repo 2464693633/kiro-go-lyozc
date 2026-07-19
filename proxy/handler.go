@@ -1554,8 +1554,8 @@ func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int
 		SimCacheRead:     simCacheRead,
 		SimCacheCreation: simCacheCreation,
 	}
-
 	h.appendRequestLog(entry)
+	RecordDailyStats(model, realInput, realOutput, simInput, realOutput, simCacheRead, simCacheCreation)
 }
 
 func (h *Handler) appendRequestLog(entry RequestLog) {
@@ -2574,6 +2574,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetLogs(w, r)
 	case path == "/logs" && r.Method == "DELETE":
 		h.apiClearLogs(w, r)
+	case path == "/daily-stats" && r.Method == "GET":
+		json.NewEncoder(w).Encode(GetDailyStatsAll())
 	case path == "/generate-machine-id" && r.Method == "GET":
 		h.apiGenerateMachineId(w, r)
 	case path == "/thinking" && r.Method == "GET":
