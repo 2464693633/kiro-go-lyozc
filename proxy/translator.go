@@ -510,6 +510,38 @@ func applyPromptFilters(prompt string) string {
 	return strings.TrimSpace(prompt)
 }
 
+// applyPromptFiltersToClaudeRequest applies prompt filters to a ClaudeRequest's
+// system prompt in-place, mirroring the filtering that ClaudeToKiro applies for
+// Kiro accounts. Used before forwarding a request to Anthropic-compatible upstreams.
+func applyPromptFiltersToClaudeRequest(req *ClaudeRequest) {
+	if req == nil {
+		return
+	}
+	switch s := req.System.(type) {
+	case string:
+		filtered := applyPromptFilters(s)
+		if filtered != s {
+			req.System = filtered
+		}
+	case []interface{}:
+		for i, block := range s {
+			m, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if m["type"] == "text" {
+				if text, ok := m["text"].(string); ok {
+					filtered := applyPromptFilters(text)
+					if filtered != text {
+						m["text"] = filtered
+						s[i] = m
+					}
+				}
+			}
+		}
+	}
+}
+
 // applyFilterRule applies a single user-defined filter rule.
 func applyFilterRule(prompt string, rule config.PromptFilterRule) string {
 	switch rule.Type {
