@@ -8,7 +8,6 @@ import (
 	"io"
 	"kiro-go/config"
 	"net/http"
-	"regexp"
 	"strings"
 )
 
@@ -26,16 +25,6 @@ func anthropicBaseURL(account *config.Account) string {
 		return strings.TrimRight(strings.TrimSpace(account.BaseURL), "/")
 	}
 	return anthropicAPIBase
-}
-
-// versionDotPattern matches version numbers in dot notation (e.g. "4.6").
-var versionDotPattern = regexp.MustCompile(`(\d+)\.(\d+)`)
-
-// anthropicModelName reverses the Kiro model name normalization
-// (claude-opus-4.6 → claude-opus-4-6) so third-party Anthropic-compatible
-// relay services receive the hyphen format they expect.
-func anthropicModelName(model string) string {
-	return versionDotPattern.ReplaceAllString(model, "$1-$2")
 }
 
 // ListAnthropicModels fetches the available model list from the Anthropic

@@ -1309,7 +1309,6 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		var err error
 		if account.IsAnthropicAccount() {
 			anthropicReq := *claudeReq
-			anthropicReq.Model = anthropicModelName(claudeReq.Model)
 			reqBody, _ := json.Marshal(&anthropicReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
@@ -1661,7 +1660,6 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		var err error
 		if account.IsAnthropicAccount() {
 			anthropicReq := *claudeReq
-			anthropicReq.Model = anthropicModelName(claudeReq.Model)
 			reqBody, _ := json.Marshal(&anthropicReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
@@ -2182,7 +2180,6 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		var err error
 		if account.IsAnthropicAccount() {
 			claudeReq := openAIToClaudeRequest(openAIReq, thinking, thinkingSuffix)
-			claudeReq.Model = anthropicModelName(claudeReq.Model)
 			reqBody, _ := json.Marshal(claudeReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
@@ -2357,7 +2354,6 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		var err error
 		if account.IsAnthropicAccount() {
 			claudeReq := openAIToClaudeRequest(openAIReq, thinking, thinkingSuffix)
-			claudeReq.Model = anthropicModelName(claudeReq.Model)
 			reqBody, _ := json.Marshal(claudeReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
