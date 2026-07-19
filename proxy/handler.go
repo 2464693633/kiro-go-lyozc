@@ -1309,7 +1309,6 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		var err error
 		if account.IsAnthropicAccount() {
 			anthropicReq := *claudeReq
-			applyPromptFiltersToClaudeRequest(&anthropicReq)
 			reqBody, _ := json.Marshal(&anthropicReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
@@ -1661,7 +1660,6 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		var err error
 		if account.IsAnthropicAccount() {
 			anthropicReq := *claudeReq
-			applyPromptFiltersToClaudeRequest(&anthropicReq)
 			reqBody, _ := json.Marshal(&anthropicReq)
 			err = callAnthropicAPI(account, reqBody, callback)
 		} else {
