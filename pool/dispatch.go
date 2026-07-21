@@ -241,11 +241,13 @@ func (p *AccountPool) selectAccountLocked(model string, excluded map[string]bool
 	// down (it will recover). Within the chosen tier, an account with no cooldown
 	// wins; otherwise the earliest-recovering one.
 	//
-	// Account TYPE outranks weight when PreferKiroAccounts is on: if any eligible
-	// Kiro account exists, the fallback restricts to Kiro accounts so a cooling-down
-	// Kiro account is still preferred over an available upstream API account (the
-	// Kiro account recovers shortly). Only when NO Kiro account is eligible do
-	// upstream accounts enter the fallback.
+	// Account TYPE outranks weight when PreferKiroAccounts is on. Cooldown counts
+	// as unavailable: the fallback restricts to Kiro accounts ONLY when a Kiro
+	// account is genuinely usable right now (not cooling down / quota blocked).
+	// A cooling-down Kiro account no longer keeps the fallback Kiro-only, so the
+	// request switches to the upstream API immediately instead of waiting for the
+	// Kiro account to recover. Only when NO usable Kiro account exists do upstream
+	// accounts enter the fallback.
 	preferKiro := config.GetPreferKiroAccounts()
 	fallbackKiroOnly := false
 	if preferKiro {
@@ -258,6 +260,11 @@ func (p *AccountPool) selectAccountLocked(model string, excluded map[string]bool
 				continue
 			}
 			if isQuotaBlocked(*acc, allowOverUsage) {
+				continue
+			}
+			// Cooldown = unavailable: skip cooling-down Kiro so it cannot block the
+			// switch to the upstream API.
+			if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
 				continue
 			}
 			if !acc.IsAnthropicAccount() {
