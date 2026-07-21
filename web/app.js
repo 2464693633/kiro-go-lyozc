@@ -1076,7 +1076,10 @@
       const overageBadge = renderOverageBadge(a);
       const banned = a.banStatus && a.banStatus !== 'ACTIVE';
       const idAttr = escapeAttr(a.id);
-      const displayEmail = getDisplayEmail(a.email, a.id);
+      const rawEmail = getDisplayEmail(a.email, a.id);
+      const nickname = (a.nickname || '').trim();
+      const displayEmail = nickname || rawEmail;
+      const displaySub = nickname ? rawEmail : '';
       const selectLabel = t('accounts.selectAccount', displayEmail);
 
       const refreshSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
@@ -1090,6 +1093,7 @@
         '<input type="checkbox" class="account-checkbox" ' + (isSelected ? 'checked' : '') + ' data-id="' + idAttr + '" aria-label="' + escapeAttr(selectLabel) + '" />' +
         '<div class="account-info-text">' +
         '<div class="account-email">' + escapeHtml(displayEmail) + '</div>' +
+        (displaySub ? '<div class="account-sub text-muted">' + escapeHtml(displaySub) + '</div>' : '') +
         '<div class="account-meta">' +
         getSubBadge(a.subscriptionType) +
         getTrialBadge(a) +
@@ -2428,6 +2432,10 @@
     title.textContent = t('modal.anthropicTitle');
     body.innerHTML =
       '<p class="help-block">' + escapeHtml(t('anthropic.hint')) + '</p>' +
+      '<div class="form-group"><label>' + escapeHtml(t('anthropic.label')) + '</label>' +
+      '<input type="text" id="anthropicLabel" placeholder="' + escapeAttr(t('anthropic.labelPlaceholder')) + '" />' +
+      '<small>' + escapeHtml(t('anthropic.labelHint')) + '</small>' +
+      '</div>' +
       '<div class="form-group"><label>' + escapeHtml(t('anthropic.key')) + '</label>' +
       '<input type="text" id="anthropicKeyValue" class="font-mono" placeholder="' + escapeAttr(t('anthropic.keyPlaceholder')) + '" />' +
       '</div>' +
@@ -2642,8 +2650,10 @@
     const kiroApiKey = $('anthropicKeyValue').value.trim();
     if (!kiroApiKey) return toastWarning(t('anthropic.keyMissing'));
     const baseURL = ($('anthropicBaseURL') && $('anthropicBaseURL').value.trim()) || '';
+    const label = ($('anthropicLabel') && $('anthropicLabel').value.trim()) || '';
     const body = { kiroApiKey, authMethod: 'anthropic', enabled: true };
     if (baseURL) body.baseURL = baseURL;
+    if (label) body.nickname = label;
     const res = await api('/accounts', { method: 'POST', body: JSON.stringify(body) });
     const d = await res.json();
     if (d.success) { closeModal(); loadAccounts(); loadStats(); toastSuccess(t('anthropic.added')); }
