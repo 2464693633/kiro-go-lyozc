@@ -3828,6 +3828,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"cacheReadMultiplier":  config.GetCacheReadMultiplier(),
 		"promptCacheTTLSeconds": config.GetPromptCacheTTLSeconds(),
 		"realCostMultiplier":   config.GetRealCostMultiplier(),
+		"preferKiroAccounts":   config.GetPreferKiroAccounts(),
 	})
 }
 
@@ -3886,6 +3887,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		CacheReadMultiplier  *float64 `json:"cacheReadMultiplier,omitempty"`
 		PromptCacheTTLSeconds *int    `json:"promptCacheTTLSeconds,omitempty"`
 		RealCostMultiplier    *float64 `json:"realCostMultiplier,omitempty"`
+		PreferKiroAccounts    *bool    `json:"preferKiroAccounts,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3908,6 +3910,14 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		// Rebuild the pool so over-quota accounts are re-included or dropped immediately.
 		h.pool.Reload()
+	}
+
+	if req.PreferKiroAccounts != nil {
+		if err := config.UpdatePreferKiroAccounts(*req.PreferKiroAccounts); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	if req.MaxPayloadBytes != nil {

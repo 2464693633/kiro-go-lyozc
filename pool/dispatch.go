@@ -65,6 +65,7 @@ type accountRuntimeStats struct {
 type accountCandidate struct {
 	account             *config.Account
 	weight              int
+	isKiro              bool
 	inFlight            int64
 	recentFailureCount  int64
 	recentSelectedCount int64
@@ -118,6 +119,7 @@ func (p *AccountPool) accountCandidateLocked(acc *config.Account, now time.Time)
 	return accountCandidate{
 		account:             acc,
 		weight:              effectiveWeight(acc.Weight),
+		isKiro:              !acc.IsAnthropicAccount(),
 		inFlight:            stats.inFlight,
 		recentFailureCount:  stats.recentFailureCount,
 		recentSelectedCount: stats.recentSelectedCount,
@@ -238,16 +240,53 @@ func (p *AccountPool) selectAccountLocked(model string, excluded map[string]bool
 	// upstream is never picked while a higher-priority account is merely cooling
 	// down (it will recover). Within the chosen tier, an account with no cooldown
 	// wins; otherwise the earliest-recovering one.
+	//
+	// Account TYPE outranks weight when PreferKiroAccounts is on: if any eligible
+	// Kiro account exists, the fallback restricts to Kiro accounts so a cooling-down
+	// Kiro account is still preferred over an available upstream API account (the
+	// Kiro account recovers shortly). Only when NO Kiro account is eligible do
+	// upstream accounts enter the fallback.
+	preferKiro := config.GetPreferKiroAccounts()
+	fallbackKiroOnly := false
+	if preferKiro {
+		for i := range p.accounts {
+			acc := &p.accounts[i]
+			if excluded != nil && excluded[acc.ID] {
+				continue
+			}
+			if requireModel && !p.accountHasModel(acc.ID, model) {
+				continue
+			}
+			if isQuotaBlocked(*acc, allowOverUsage) {
+				continue
+			}
+			if !acc.IsAnthropicAccount() {
+				fallbackKiroOnly = true
+				break
+			}
+		}
+	}
+
+	fallbackEligible := func(acc *config.Account) bool {
+		if excluded != nil && excluded[acc.ID] {
+			return false
+		}
+		if requireModel && !p.accountHasModel(acc.ID, model) {
+			return false
+		}
+		if isQuotaBlocked(*acc, allowOverUsage) {
+			return false
+		}
+		if fallbackKiroOnly && acc.IsAnthropicAccount() {
+			return false
+		}
+		return true
+	}
+
 	fallbackMaxWeight := -1
 	for i := range p.accounts {
 		acc := &p.accounts[i]
-		if excluded != nil && excluded[acc.ID] {
-			continue
-		}
-		if requireModel && !p.accountHasModel(acc.ID, model) {
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
+		if !fallbackEligible(acc) {
 			continue
 		}
 		if w := effectiveWeight(acc.Weight); w > fallbackMaxWeight {
@@ -262,13 +301,7 @@ func (p *AccountPool) selectAccountLocked(model string, excluded map[string]bool
 	var earliest time.Time
 	for i := range p.accounts {
 		acc := &p.accounts[i]
-		if excluded != nil && excluded[acc.ID] {
-			continue
-		}
-		if requireModel && !p.accountHasModel(acc.ID, model) {
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
+		if !fallbackEligible(acc) {
 			continue
 		}
 		// Only consider the highest-priority tier with eligible accounts.
@@ -321,13 +354,39 @@ func highestPriorityCandidates(candidates []accountCandidate) []accountCandidate
 	return top
 }
 
-// bestCandidateLocked applies the priority-tier filter and concurrency cap,
-// picks one candidate via the configured strategy, marks it selected
-// (in-flight++), and returns a value copy. Returns nil when candidates is empty.
+// preferKiroCandidates implements the global "prefer Kiro accounts" switch: when
+// enabled and at least one Kiro (non-Anthropic) candidate is present, only Kiro
+// candidates are kept, so the upstream Anthropic API is used solely as a fallback
+// when every Kiro account is unavailable (cooling down / disabled / quota
+// blocked — all filtered out upstream). Account TYPE outranks the numeric weight
+// tier: the weight filter runs afterwards within the chosen type tier. When the
+// switch is off, or when no Kiro candidate remains, the input is returned
+// unchanged so mixed selection / pure-upstream operation is unaffected.
+func preferKiroCandidates(candidates []accountCandidate) []accountCandidate {
+	if len(candidates) == 0 || !config.GetPreferKiroAccounts() {
+		return candidates
+	}
+	kiro := make([]accountCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		if c.isKiro {
+			kiro = append(kiro, c)
+		}
+	}
+	if len(kiro) == 0 {
+		return candidates // no Kiro account available — fall back to upstream
+	}
+	return kiro
+}
+
+// bestCandidateLocked applies the type-priority filter, weight-tier filter and
+// concurrency cap, picks one candidate via the configured strategy, marks it
+// selected (in-flight++), and returns a value copy. Returns nil when candidates
+// is empty.
 func (p *AccountPool) bestCandidateLocked(candidates []accountCandidate, now time.Time) *config.Account {
 	if len(candidates) == 0 {
 		return nil
 	}
+	candidates = preferKiroCandidates(candidates)
 	candidates = highestPriorityCandidates(candidates)
 	candidates = applyConcurrencyCap(candidates)
 	best := selectCandidate(candidates)

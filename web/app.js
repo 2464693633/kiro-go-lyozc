@@ -1670,6 +1670,8 @@
     const d = await res.json();
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
+    const preferKiroEl = document.getElementById('preferKiroAccounts');
+    if (preferKiroEl) preferKiroEl.checked = d.preferKiroAccounts || false;
     const maxPayloadEl = document.getElementById('maxPayloadBytes');
     if (maxPayloadEl) maxPayloadEl.value = String(d.maxPayloadBytes || 2000000);
     const cacheMaxRatioEl = document.getElementById('cacheMaxRatio');
@@ -1799,7 +1801,9 @@
     const promptCacheTTLSeconds = cacheTTLEl ? Math.max(30, Math.min(3600, parseInt(cacheTTLEl.value || '300', 10))) : 300;
     const realCostMulEl = document.getElementById('realCostMultiplier');
     const realCostMultiplier = realCostMulEl ? parseFloat(realCostMulEl.value || '1') : 1;
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio, inputTokenMultiplier, cacheReadMultiplier, promptCacheTTLSeconds, realCostMultiplier }) });
+    const preferKiroEl = document.getElementById('preferKiroAccounts');
+    const preferKiroAccounts = preferKiroEl ? preferKiroEl.checked : false;
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, promptCacheMaxRatio, inputTokenMultiplier, cacheReadMultiplier, promptCacheTTLSeconds, realCostMultiplier, preferKiroAccounts }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {

@@ -92,6 +92,8 @@
   "settings.usageSettings": "用量控制",
   "settings.allowOverUsage": "允许超额使用",
   "settings.allowOverUsageHint": "开启后，即使账号额度用尽也会继续使用该账号处理请求，不再因余额不足而报错",
+  "settings.preferKiroAccounts": "Kiro 账号优先",
+  "settings.preferKiroAccountsHint": "开启后优先使用 Kiro 账号，仅当所有 Kiro 账号都不可用（冷却/禁用/额度耗尽）时才切换到上游 API。账号类型优先级高于权重设置。",
   "settings.saveUsage": "保存用量更改",
   "settings.overUsageSaved": "超额使用设置已保存",
   "settings.thinkingSettings": "Thinking 模式设置",

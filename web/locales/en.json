@@ -92,6 +92,8 @@
   "settings.usageSettings": "Usage Control",
   "settings.allowOverUsage": "Allow Over-Usage",
   "settings.allowOverUsageHint": "When enabled, accounts will continue to serve requests even after their quota is exhausted",
+  "settings.preferKiroAccounts": "Prefer Kiro Accounts",
+  "settings.preferKiroAccountsHint": "When enabled, Kiro accounts are used first; the upstream API is used only when every Kiro account is unavailable (cooling down / disabled / quota exhausted). Account type outranks the weight setting.",
   "settings.saveUsage": "Save Usage Changes",
   "settings.overUsageSaved": "Over-usage settings saved",
   "settings.thinkingSettings": "Thinking Mode Settings",

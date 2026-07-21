@@ -355,6 +355,13 @@ type Config struct {
 	// solely because usageCurrent >= usageLimit.
 	AllowOverUsage bool `json:"allowOverUsage,omitempty"`
 
+	// PreferKiroAccounts makes account TYPE a strict priority tier that outranks
+	// the per-account weight: when enabled, Kiro accounts are always tried first
+	// and Anthropic upstream accounts are used only when every Kiro account is
+	// unavailable (cooling down / disabled / token expired / quota exhausted).
+	// When disabled, only the per-account weight tiering applies.
+	PreferKiroAccounts bool `json:"preferKiroAccounts,omitempty"`
+
 	// Region defaults for accounts that omit per-account region/authRegion/apiRegion.
 	// Defaults to "us-east-1" when empty (see GetGlobalRegion* / Account.Effective*Region).
 	Region        string `json:"region,omitempty"`
@@ -1278,6 +1285,25 @@ func UpdateAllowOverUsage(allow bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.AllowOverUsage = allow
+	return Save()
+}
+
+// GetPreferKiroAccounts returns whether Kiro accounts take strict priority over
+// Anthropic upstream accounts in dispatch (default false).
+func GetPreferKiroAccounts() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	return cfg.PreferKiroAccounts
+}
+
+// UpdatePreferKiroAccounts sets the Kiro-priority setting and persists the change.
+func UpdatePreferKiroAccounts(prefer bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.PreferKiroAccounts = prefer
 	return Save()
 }
 
