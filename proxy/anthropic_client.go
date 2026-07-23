@@ -27,6 +27,59 @@ func anthropicBaseURL(account *config.Account) string {
 	return anthropicAPIBase
 }
 
+// rewriteAnthropicModelBody rewrites the top-level "model" field of a serialized
+// ClaudeRequest, converting version dots back to hyphens (claude-opus-4.8 ->
+// claude-opus-4-8). It returns the re-marshaled body and true when a change was
+// made; otherwise the original body is left untouched (ok=false) so a body
+// without a model field, or one already in hyphen form, incurs no rewrite.
+func rewriteAnthropicModelBody(reqBody []byte) ([]byte, bool) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(reqBody, &raw); err != nil {
+		return reqBody, false
+	}
+	modelRaw, ok := raw["model"]
+	if !ok {
+		return reqBody, false
+	}
+	var model string
+	if err := json.Unmarshal(modelRaw, &model); err != nil {
+		return reqBody, false
+	}
+	fixed := versionDotToHyphenModel(model)
+	if fixed == model {
+		return reqBody, false
+	}
+	encoded, err := json.Marshal(fixed)
+	if err != nil {
+		return reqBody, false
+	}
+	raw["model"] = encoded
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return reqBody, false
+	}
+	return out, true
+}
+
+// versionDotToHyphenModel replaces a dot between two digits with a hyphen
+// (claude-opus-4.8 -> claude-opus-4-8), leaving all other dots untouched. This
+// mirrors the pool-side fuzzy matcher so upstream Anthropic relays receive the
+// hyphenated model IDs they advertise.
+func versionDotToHyphenModel(model string) string {
+	runes := []rune(model)
+	out := make([]rune, 0, len(runes))
+	for i, r := range runes {
+		if r == '.' && i > 0 && i < len(runes)-1 &&
+			runes[i-1] >= '0' && runes[i-1] <= '9' &&
+			runes[i+1] >= '0' && runes[i+1] <= '9' {
+			out = append(out, '-')
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
+}
+
 // ListAnthropicModels fetches the available model list from the Anthropic
 // (or compatible relay) /v1/models endpoint and returns them as ModelInfo
 // entries. The model IDs are returned as-is (no normalization) so the proxy
@@ -88,6 +141,14 @@ func callAnthropicAPI(account *config.Account, reqBody []byte, callback *KiroStr
 		Thinking interface{} `json:"thinking"`
 	}
 	_ = json.Unmarshal(reqBody, &meta)
+
+	// The proxy normalizes client model names to dot form for Kiro routing
+	// (claude-opus-4-8 -> claude-opus-4.8), but Anthropic-compatible relays
+	// expect the original hyphen form. Convert version dots back to hyphens at
+	// this single upstream boundary so every dispatch path is covered.
+	if rewritten, ok := rewriteAnthropicModelBody(reqBody); ok {
+		reqBody = rewritten
+	}
 
 	url := anthropicBaseURL(account) + "/v1/messages"
 	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(reqBody))
