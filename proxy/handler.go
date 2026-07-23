@@ -307,6 +307,9 @@ func (h *Handler) refreshAllAccounts() {
 		if !account.Enabled || account.AccessToken == "" {
 			continue
 		}
+		if account.IsAnthropicAccount() {
+			continue // no Kiro REST refresh needed for upstream API accounts
+		}
 
 		// 刷新 token（去重 + 持久化由 refreshAccountToken 统一处理）
 		if err := h.refreshAccountToken(account, false); err != nil {
@@ -4076,7 +4079,6 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 		MaxTokens: 5,
 		Stream:    false,
 	}
-	kiroPayload := OpenAIToKiro(openaiReq, thinking)
 
 	var content string
 	callback := &KiroStreamCallback{
@@ -4088,7 +4090,20 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 		OnContextUsage: func(pct float64) {},
 	}
 
-	err := CallKiroAPI(account, kiroPayload, callback)
+	var err error
+	if account.IsAnthropicAccount() {
+		claudeReq := openAIToClaudeRequest(openaiReq, thinking, thinkingCfg.Suffix)
+		body, jsonErr := json.Marshal(claudeReq)
+		if jsonErr != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": jsonErr.Error()})
+			return
+		}
+		err = callAnthropicAPI(account, body, callback)
+	} else {
+		kiroPayload := OpenAIToKiro(openaiReq, thinking)
+		err = CallKiroAPI(account, kiroPayload, callback)
+	}
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -4116,6 +4131,11 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 	if account == nil {
 		w.WriteHeader(404)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Account not found"})
+		return
+	}
+
+	if account.IsAnthropicAccount() {
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "Upstream API account — no refresh needed"})
 		return
 	}
 
