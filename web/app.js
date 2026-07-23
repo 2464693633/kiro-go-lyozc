@@ -708,8 +708,6 @@
     return id.slice(0, 8);
   }
 
-  }
-
   async function loadDailyStats() {
     const el = $('dailyContent');
     if (!el) return;
